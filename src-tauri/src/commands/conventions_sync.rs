@@ -344,7 +344,7 @@ pub fn sync_to_files(
         for p in &split_paths {
             // 진입점 파일 기준 상대 경로
             if let Ok(rel) = p.strip_prefix(project_root) {
-                s.push_str(&format!("@{}\n", rel.display()));
+                s.push_str(&format!("@{}\n", rel.to_string_lossy().replace('\\', "/")));
             }
         }
         s

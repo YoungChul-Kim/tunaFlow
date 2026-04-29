@@ -109,7 +109,7 @@ Automatically detects available agents during initial project setup and recommen
 
 ### Prerequisites
 
-- macOS (currently macOS only)
+- macOS 12+ (primary) / Windows x64 (preview)
 - **Node.js 20+**
 - **Rust stable** — if not already installed, one line via rustup:
 
@@ -143,10 +143,18 @@ npm run tauri dev
 ./scripts/build.sh
 ```
 
-### Beta Installation (macOS)
+### Beta Installation
+
+macOS:
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/hang-in/tunaFlow/main/install.sh | bash
+```
+
+Windows x64:
+
+```powershell
+irm https://raw.githubusercontent.com/hang-in/tunaFlow/main/install.ps1 | iex
 ```
 
 > As this uses an ad-hoc signature, a Gatekeeper warning may appear.
@@ -215,7 +223,7 @@ If this trade-off is unacceptable for your workflow, run Claude Code directly in
 
 - **PTY Terminal — Work in Progress** — The in-app terminal panel is temporarily unavailable in the Beta bundle and is being rewired. Use an external terminal (iTerm2 / Terminal.app / Warp) alongside tunaFlow until a follow-up release restores it.
 - **JSONL Completion Detection Failure (P1)** — Occasional issues where PTY session responses are not reflected in the UI (transitioning to `sdk-session` WebSocket path).
-- **Windows / Linux builds** — Not yet supported; packaging pipeline in progress.
+- **Windows / Linux builds** - Windows x64 preview is available; Linux support is still pending.
 
 ### By design / Beta stage
 

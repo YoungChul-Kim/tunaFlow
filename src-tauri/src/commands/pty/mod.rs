@@ -1,4 +1,4 @@
-//! PTY module — portable PTY session management + JSONL parsers for agent output.
+﻿//! PTY module - portable PTY session management + JSONL parsers for agent output.
 
 mod session;
 mod context;
@@ -13,8 +13,9 @@ pub use parser_claude::*;
 pub use parser_agents::*;
 
 use serde::Serialize;
+use std::path::Path;
 
-// ─── Shared event payloads ─────────────────────────────────────────────
+// Shared event payloads
 
 /// Payload emitted for each PTY output chunk.
 #[derive(Clone, Serialize)]
@@ -32,7 +33,7 @@ pub struct PtyExitPayload {
     pub exit_code: Option<i32>,
 }
 
-// ─── Shared parser types ───────────────────────────────────────────────
+// Shared parser types
 
 #[derive(Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -56,15 +57,33 @@ pub struct PtyJsonlResult {
     pub is_complete: bool,
 }
 
-// ─── Shared parser helpers ─────────────────────────────────────────────
+// Shared parser helpers
 
 pub(super) fn shorten_path(path: &str) -> String {
-    let parts: Vec<&str> = path.split('/').filter(|s| !s.is_empty()).collect();
+    let normalized = path.replace('\\', "/");
+    let parts: Vec<&str> = normalized.split('/').filter(|s| !s.is_empty()).collect();
     if parts.len() <= 3 {
         parts.join("/")
     } else {
-        parts[parts.len()-3..].join("/")
+        parts[parts.len() - 3..].join("/")
     }
+}
+
+pub(super) fn encode_project_path(project_path: &str) -> String {
+    project_path
+        .chars()
+        .map(|ch| match ch {
+            '/' | '\\' | ':' => '-',
+            _ => ch,
+        })
+        .collect()
+}
+
+pub(super) fn file_name_fallback(path: &str) -> String {
+    Path::new(path)
+        .file_name()
+        .map(|name| name.to_string_lossy().to_string())
+        .unwrap_or_else(|| path.replace('\\', "/").rsplit('/').next().unwrap_or(path).to_string())
 }
 
 pub(super) fn summarize_tool_input(tool_name: &str, input: &serde_json::Value) -> String {

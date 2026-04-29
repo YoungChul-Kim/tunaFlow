@@ -159,8 +159,13 @@ pub fn extract_markdown_links(content: &str) -> Vec<MarkdownLink> {
 /// Excludes filenames already captured as markdown link targets.
 pub fn extract_filename_mentions(content: &str, exclude_link_targets: &[String]) -> Vec<String> {
     let re = regex::Regex::new(r"\b([a-zA-Z0-9_\-]+\.md)\b").unwrap();
-    let exclude: std::collections::HashSet<&str> = exclude_link_targets.iter()
-        .map(|t| t.rsplit('/').next().unwrap_or(t))
+    let exclude: std::collections::HashSet<String> = exclude_link_targets.iter()
+        .map(|t| {
+            Path::new(t)
+                .file_name()
+                .map(|name| name.to_string_lossy().to_string())
+                .unwrap_or_else(|| t.replace('\\', "/").rsplit('/').next().unwrap_or(t).to_string())
+        })
         .collect();
     let mut seen = std::collections::HashSet::new();
     re.find_iter(content)
@@ -253,8 +258,8 @@ pub fn index_project_documents_with_options(
 
     for file_path in &md_files {
         let relative = match file_path.strip_prefix(base) {
-            Ok(r) => r.to_string_lossy().to_string(),
-            Err(_) => file_path.to_string_lossy().to_string(),
+            Ok(r) => r.to_string_lossy().replace('\\', "/"),
+            Err(_) => file_path.to_string_lossy().replace('\\', "/"),
         };
 
         let content = match std::fs::read_to_string(file_path) {
@@ -430,7 +435,7 @@ pub fn index_project_documents_with_options(
             // mention is just a filename like "somePlan.md" — need to find full path
             // Search indexed files for matching filename
             let target_path: Option<String> = conn.query_row(
-                "SELECT file_path FROM document_index_status WHERE project_key = ?1 AND file_path LIKE '%/' || ?2",
+                "SELECT file_path FROM document_index_status WHERE project_key = ?1 AND file_path LIKE '%' || ?2",
                 params![project_key, mention],
                 |r| r.get(0),
             ).ok().or_else(|| {

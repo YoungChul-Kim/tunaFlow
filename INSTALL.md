@@ -179,3 +179,18 @@ open ~/Library/Logs/tunaFlow/
 rm -rf /Applications/tunaFlow.app
 rm -f /usr/local/bin/tunaflow
 ```
+
+---
+
+## Windows Installation (x64)
+
+```powershell
+irm https://raw.githubusercontent.com/hang-in/tunaFlow/main/install.ps1 | iex
+```
+
+The Windows installer downloads the latest NSIS build from GitHub Releases and runs the installer.
+
+Notes:
+- Windows support is x64-first for now.
+- If you prefer manual install, open the latest GitHub Release and download the Windows `.exe` asset.
+- The installer should add a Start Menu shortcut; use that to launch tunaFlow after setup.

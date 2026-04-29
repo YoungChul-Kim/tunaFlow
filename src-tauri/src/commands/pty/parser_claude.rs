@@ -23,7 +23,7 @@ pub fn pty_poll_jsonl(
         }
         p
     } else {
-        let encoded = project_path.replace('/', "-");
+        let encoded = super::encode_project_path(&project_path);
         let claude_dir = dirs::home_dir()
             .ok_or_else(|| AppError::Agent("no home dir".into()))?
             .join(".claude/projects")
@@ -159,7 +159,7 @@ pub fn pty_poll_jsonl(
                             let output = extract_tool_result_content(&item["content"]);
                             if !output.is_empty() {
                                 let truncated = if output.len() > 500 {
-                                    format!("{}…", &output[..output.floor_char_boundary(500)])
+                                    format!("{}...", &output[..output.floor_char_boundary(500)])
                                 } else {
                                     output
                                 };

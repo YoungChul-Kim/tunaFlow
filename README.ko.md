@@ -110,7 +110,7 @@ rawq 와 code-review-graph 가 미리 뽑아둔 데이터를 에이전트가 분
 
 ### 사전 준비
 
-- macOS (현재 macOS 전용)
+- macOS 12+ (기본) / Windows x64 (미리보기)
 - **Node.js 20+**
 - **Rust stable** — 설치 안 돼있으면 rustup 한 줄로 설치:
 
@@ -144,10 +144,16 @@ npm run tauri dev
 ./scripts/build.sh
 ```
 
-### 베타 설치 (macOS)
+### 베타 설치
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/hang-in/tunaFlow/main/install.sh | bash
+```
+
+Windows x64:
+
+```powershell
+irm https://raw.githubusercontent.com/hang-in/tunaFlow/main/install.ps1 | iex
 ```
 
 > macOS ad-hoc 서명이므로 Gatekeeper 경고가 뜰 수 있습니다.
@@ -202,7 +208,7 @@ tunaFlow 를 만들면서 Claude Opus 가 쓴 개발기입니다. 설계 결정 
 
 - **PTY 터미널 — 작업 중** — 인앱 터미널 패널은 Beta 번들에서 일시적으로 비활성화되어 재구성 중입니다. 후속 릴리즈에서 복원되기 전까지는 외부 터미널 (iTerm2 / Terminal.app / Warp) 을 병행 사용하세요.
 - **JSONL 완료 감지 실패 (P1)** — PTY 세션에서 응답이 UI 에 반영되지 않는 경우 간헐적 발생 (sdk-session WebSocket 경로로 이동 중).
-- **Windows / Linux 빌드** — 미지원. 패키징 파이프라인 준비 중.
+- **Windows / Linux 빌드** — Windows x64 미리보기는 제공되며, Linux 지원은 아직 준비 중입니다.
 
 ### 설계상 / Beta 단계
 

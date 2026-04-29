@@ -21,7 +21,7 @@ pub struct PtyContextResult {
 pub fn pty_list_jsonl_files(
     project_path: String,
 ) -> Result<Vec<String>, AppError> {
-    let encoded = project_path.replace('/', "-");
+    let encoded = super::encode_project_path(&project_path);
     let claude_dir = dirs::home_dir()
         .ok_or_else(|| AppError::Agent("no home dir".into()))?
         .join(".claude/projects")
