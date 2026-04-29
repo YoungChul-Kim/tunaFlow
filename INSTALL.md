@@ -125,14 +125,14 @@ xattr -cr /Applications/tunaFlow.app
 
 ---
 
-## Lite 트랙 — 추가 기능 자동 설치
+## Lite 트랙 — 추가 기능 설치 안내 (consent 기반)
 
-앱 첫 실행 시 감지:
+앱 첫 실행 시 감지하여 **사용자 동의 후** 설치 안내 다이얼로그를 표시합니다. silent global install 은 수행하지 않습니다.
 
 | 기능 | 필요 조건 | 없을 때 |
 |------|----------|---------|
-| code-review-graph | Python 3 + pip | 앱 내 안내 표시 |
-| context-hub | Node.js + npm | 앱 내 안내 표시 |
+| code-review-graph | Python 3 + pip | 첫 실행 dialog 에서 동의 시 `pip install code-review-graph` (또는 활성 venv) — 거절 시 Settings → Runtime 에 수동 설치 버튼 노출 |
+| context-hub | Node.js + npm | 첫 실행 dialog 에서 동의 시 `npm install -g @aisuite/chub` — 거절 시 Settings → Runtime 에 수동 설치 버튼 노출 |
 | rawq | (번들 포함) | — |
 
 ---
@@ -151,6 +151,19 @@ open -a tunaFlow
 open ~/Library/Logs/tunaFlow/
 ```
 
+### Claude 응답이 "out of extra usage" 등으로 거부될 때 (v0.1.4-beta 업그레이드 직후)
+
+v0.1.4-beta 의 transport flip (`-p --resume`) 이후 한동안 미사용 conversation 의 `resume_token` 이 stale 일 수 있습니다. 증상:
+
+- "out of extra usage" / "session not found" / "404" 등의 에러
+- 같은 사용자/계정의 다른 conversation (스크래치패드 등) 은 정상
+
+**해결 (v0.1.5-beta+ 자동)**: tunaFlow 가 stale 패턴을 감지해 `--resume` 제거 후 1회 retry. 다음 send 부터 ContextPack 이 full mode 로 다시 붙습니다. 토스트로 안내됩니다.
+
+**수동 재시작**: conversation 우클릭 → "Claude 세션 재시작". 다음 send 가 fresh session 으로 시작.
+
+**그래도 안 되면**: [claude.ai/settings/usage](https://claude.ai/settings/usage) 에서 5시간 한도 / 주간 한도 / "extra usage" (overage) 옵션 확인.
+
 ### rawq 가 인식 안 될 때 (footer "rawq sidecar 없음")
 
 원인 별 분기:
@@ -161,6 +174,24 @@ open ~/Library/Logs/tunaFlow/
 | `cargo install rawq` 했는데도 인식 안 됨 | tunaFlow 는 시스템 PATH 의 rawq 가 아니라 앱 번들 내부 sidecar 만 사용 (의도된 디자인) | 시스템 rawq 영향 없음. 위의 quarantine 항목으로 분기 |
 | 직접 빌드 시 `binaries/rawq-aarch64-apple-darwin doesn't exist` 로 중단 | `npm run tauri build` 직접 실행 시 사이드카 사전 빌드가 필요 | `./scripts/build.sh` (wrapper) 또는 빌드 전 `./scripts/build-rawq.sh` 실행 |
 | 위 셋 모두 해결 후에도 unavailable | 코드측 sidecar resolution 실패 — `Console.app` 에서 `[get_rawq_status] rawq sidecar unavailable —` 로 시작하는 라인의 진단(triple, candidate count, PATH fallback) 확인 후 [Issue 등록](https://github.com/hang-in/tunaFlow/issues) | — |
+
+### rawq 소스 자동 clone (외부 contributor / 처음 빌드)
+
+`./scripts/build-rawq.sh` (또는 Windows `.\scripts\build-rawq.ps1`) 는 다음 우선순위로 rawq 소스를 찾습니다:
+
+1. `RAWQ_SRC` 환경변수 (명시적 override — 잘못된 path 면 fallback 안 타고 즉시 에러)
+2. 로컬 path 3개: `vendor/rawq` → `../tunaDish/vendor/rawq` → `../_research/_util/rawq`
+3. **자동 clone fallback** — 위 모두 실패 시 `vendor/rawq` 에 `git clone --depth 1 https://github.com/hang-in/rawq` 실행
+
+대부분의 contributor 는 별도 설정 없이 `./scripts/build-rawq.sh` 만 실행하면 자동 clone → 빌드까지 처리됩니다.
+
+특수 케이스:
+
+- **오프라인 / corporate firewall**: 미리 rawq 소스를 받아두고 `RAWQ_SRC=/path/to/rawq ./scripts/build-rawq.sh` 로 지정.
+- **Private fork**: `RAWQ_REPO_URL=https://github.com/<your-org>/rawq ./scripts/build-rawq.sh`. SSH URL 또는 token URL 도 가능 (인증은 사용자 책임).
+- **자동 clone 산출물**: `vendor/rawq/` 는 `.gitignore` 처리되어 commit 영향 없음. 재빌드 시 기존 폴더 재사용 (clone skip).
+
+> rawq 는 임베딩 기반 코드 검색 sidecar 입니다. tunaFlow 가 build-time 에 자동 clone + 빌드해서 `.app` 번들에 포함합니다. 상세: <https://github.com/auyelbekov/rawq> (upstream) / <https://github.com/hang-in/rawq> (tunaFlow 가 사용하는 patched fork).
 
 ### Smoke checklist (release 회귀 방지)
 

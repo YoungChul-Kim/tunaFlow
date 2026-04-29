@@ -225,10 +225,18 @@ If this trade-off is unacceptable for your workflow, run Claude Code directly in
 - **JSONL Completion Detection Failure (P1)** — Occasional issues where PTY session responses are not reflected in the UI (transitioning to `sdk-session` WebSocket path).
 - **Windows / Linux builds** - Windows x64 preview is available; Linux support is still pending.
 
+### Anthropic billing & Claude session behavior
+
+- **Claude `-p` headless mode**: tunaFlow uses the `claude -p --resume <id>` CLI path (since v0.1.4-beta, after the upstream `--sdk-url` policy change). Pro/Max plan limits — 5-hour rolling window + weekly cap + overage policy — apply the same as in `claude.ai`.
+- **Stale resume_token auto-recovery (v0.1.5-beta+)**: idle conversations may carry a `resume_token` that the upstream session store has rolled off. tunaFlow detects the rejection pattern (`out of extra usage`, `404 session not found`, etc.), clears `--resume`, and retries once. From the next send, `ContextPack` is re-attached in full mode + 2-turn anchor. A toast informs the user when this happens.
+- **Manual restart**: right-click any conversation → "Restart Claude session" forces a fresh session for the next send (works alongside the auto-recovery above).
+- **Where to check usage**: [claude.ai/settings/usage](https://claude.ai/settings/usage) — verify your 5-hour limit, weekly cap, and "extra usage" (overage) toggle.
+
 ### By design / Beta stage
 
 - **Ad-hoc Signature** — No Apple Developer ID signing in Beta. Requires Gatekeeper bypass (`xattr -cr /Applications/tunaFlow.app`). Drag-installing the DMG without running `install.sh` leaves a quarantine attribute on the `.app`, which silently blocks the bundled sidecars (rawq) — see [INSTALL.md → "rawq 가 인식 안 될 때"](./INSTALL.md#rawq-가-인식-안-될-때-footer-rawq-sidecar-없음) for the symptom-cause table.
 - **rawq is a bundled sidecar, not a PATH binary** — tunaFlow ships a locally-patched rawq build inside the `.app` bundle (`Contents/MacOS/rawq`) and only resolves it from there. Running `cargo install rawq` to put rawq on `$PATH` does **not** affect tunaFlow — the app intentionally ignores the system-wide rawq to avoid version drift. Build path: `./scripts/build.sh` (recommended wrapper, runs `build-rawq.sh` first); running `npm run tauri build` directly will fail with `binaries/rawq-aarch64-apple-darwin doesn't exist` unless you pre-built the sidecar (upstream: https://github.com/auyelbekov/rawq).
+- **rawq source is auto-cloned at build time** — first run of `./scripts/build-rawq.sh` (or `build-rawq.ps1`) auto-clones `vendor/rawq/` from `https://github.com/hang-in/rawq` if no local copy is present. `vendor/rawq/` is gitignored. Override with `RAWQ_SRC=<path>` (offline) or `RAWQ_REPO_URL=<fork>` (private fork). See [INSTALL.md](./INSTALL.md#rawq-소스-자동-clone-외부-contributor--처음-빌드).
 - **Limited mid-round RT interruption** — participant-level token streaming works in real time, but once a round is in progress, redirecting the discussion mid-round is awkward. Feedback is delivered between rounds.
 - **Initial Indexing Delay** — Large projects may take several minutes for the first run (CPU spikes mitigated via ONNX thread limits, semaphores, and incremental indexing). Build artifact directories (`target/`, `node_modules/`, `dist/`, `.venv/`, `__pycache__/` and similar) are excluded from rawq indexing to prevent OOM — full list and the `Rebuild index` button (for users upgrading from before the exclude list) are documented in [rawq-setup.md](./docs/how-to/rawq-setup.md#제외-패턴-exclude-patterns--issue-180-hotfix).
 
@@ -258,7 +266,7 @@ tunaFlow borrows ideas and code from several open-source projects. Thanks to the
 
 - **[rawq](https://github.com/auyelbekov/rawq)** (MIT) — code-search sidecar. tunaFlow ships a locally-patched build as a bundled binary.
 - **[code-review-graph](https://github.com/tirth8205/code-review-graph)** (MIT) — CRG sidecar (Full track). Graph-based code review analysis.
-- **[context-hub](https://github.com/andrewyng/context-hub)** (MIT) — context-sharing sidecar. Auto-installed on first run.
+- **[context-hub](https://github.com/andrewyng/context-hub)** (MIT) — context-sharing sidecar. Prompted to install on first run (consent required; falls back gracefully if declined).
 
 ### Design / architecture influences
 

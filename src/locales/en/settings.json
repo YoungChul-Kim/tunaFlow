@@ -10,7 +10,31 @@
     "runtime": "Runtime",
     "terminal": "Terminal",
     "mobile": "Mobile",
+    "docs_scope": "Docs Panel",
+    "notifications": "Notifications",
     "help": "Help"
+  },
+  "notifications": {
+    "heading": "Notifications",
+    "description": "Manage desktop notification permissions and behavior.",
+    "status": {
+      "label": "Current permission",
+      "notDetermined": "Not yet decided",
+      "denied": "Denied",
+      "authorized": "Allowed",
+      "macos_only_hint": "These controls only apply on macOS (Windows / Linux use the OS default path)."
+    },
+    "actions": {
+      "request": "Request permission now",
+      "open_system_settings": "Open macOS System Settings",
+      "test": "Send a test notification"
+    },
+    "denied_help": "Permission was denied — enable it manually in System Settings → Notifications → tunaFlow.",
+    "toast": {
+      "denied": "Notification permission denied. You can enable it later in macOS System Settings.",
+      "test_sent": "Test notification sent.",
+      "test_failed": "Test notification failed: {{error}}"
+    }
   },
   "skills_description": "Manage the skills applied to agents.",
   "profile": {
@@ -228,6 +252,13 @@
   "runtime": {
     "heading": "Runtime",
     "description": "Inspect and manage the runtime environment.",
+    "context_hub_install": {
+      "button": "Install via npm",
+      "installing": "Installing...",
+      "manual_hint": "Manual command:",
+      "success": "Installed — restart to mark as ready",
+      "venv_note": "The Python sidecar (code-review-graph) is installed via the first-run dialog or with an active venv."
+    },
     "workflow_skills": {
       "heading": "Workflow Skills",
       "description": "Skill sets per workflow phase. Combined with manual selection.",
@@ -281,6 +312,21 @@
         "no_path": "Project path not found."
       }
     }
+  },
+  "docs_scope": {
+    "heading": "Docs Panel Scope",
+    "description": "Choose which .md files appear in the left sidebar docs panel.",
+    "option": {
+      "all_label": "All docs",
+      "all_desc": "Every .md file under the project root (.gitignore respected, max depth 5). Recommended for monorepos / workspaces.",
+      "tunaflow_label": "tunaFlow only",
+      "tunaflow_desc": "Only docs/ and root-level .md files (legacy behavior)."
+    },
+    "scope_label": {
+      "all": "All docs",
+      "tunaflow": "tunaFlow only"
+    },
+    "performance_warning": "Found {{count}} docs. If the panel feels heavy, switch to 'tunaFlow only' in Settings."
   },
   "conventions": {
     "heading": "Conventions Context Sync",

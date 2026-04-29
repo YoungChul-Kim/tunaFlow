@@ -46,6 +46,28 @@ pub struct CreateProjectInput {
     pub source: String,
 }
 
+/// Validate the project's `path` column at runtime: populate `path_valid`
+/// and log a warning when stale. This is the single hook that makes the
+/// "macOS DB ported to Windows" regression visible to the frontend.
+///
+/// Side effect: `eprintln!` only — DB row is preserved so the user can
+/// later re-map the path manually.
+fn fill_path_valid(p: &mut Project) {
+    p.path_valid = match p.path.as_deref() {
+        Some(s) if !s.trim().is_empty() => {
+            let ok = std::path::Path::new(s).is_dir();
+            if !ok {
+                eprintln!(
+                    "[projects] stale path detected — key={} path={} (DB row preserved; user can re-map)",
+                    p.key, s
+                );
+            }
+            Some(ok)
+        }
+        _ => None,
+    };
+}
+
 #[tauri::command]
 pub fn list_projects(state: State<DbState>) -> Result<Vec<Project>, AppError> {
     let conn = state.read.lock().map_err(|_| AppError::Lock)?;
@@ -53,7 +75,7 @@ pub fn list_projects(state: State<DbState>) -> Result<Vec<Project>, AppError> {
         "SELECT key, name, path, type, default_engine, workspace_root, source, updated_at
          FROM projects WHERE COALESCE(hidden, 0) = 0 ORDER BY updated_at DESC",
     )?;
-    let rows = stmt
+    let mut rows = stmt
         .query_map([], |row| {
             Ok(Project {
                 key: row.get(0)?,
@@ -64,10 +86,72 @@ pub fn list_projects(state: State<DbState>) -> Result<Vec<Project>, AppError> {
                 workspace_root: row.get(5)?,
                 source: row.get(6)?,
                 updated_at: row.get(7)?,
+                path_valid: None,
             })
         })?
         .collect::<Result<Vec<_>, _>>()?;
+    for p in rows.iter_mut() {
+        fill_path_valid(p);
+    }
     Ok(rows)
+}
+
+/// 최근 열었던 프로젝트 목록 — `last_opened_at DESC` 순.
+///
+/// `globalSettingsAndRecentProjectsPlan_2026-04-29.md` Task 02 의 G3.
+/// `list_projects` 와 동일한 hidden 필터 + Project shape 를 유지하지만,
+/// `last_opened_at = 0` (한 번도 열지 않은 프로젝트) 은 결과에서 제외 —
+/// "최근" 의 정의에 부합. 정렬은 last_opened_at DESC, tie-break 으로
+/// updated_at DESC.
+///
+/// `limit` 은 UI 측 (5 권장) 에서 제어. 0 또는 음수면 기본값 5 적용.
+#[tauri::command]
+pub fn list_recent_projects(
+    limit: Option<i64>,
+    state: State<DbState>,
+) -> Result<Vec<Project>, AppError> {
+    let conn = state.read.lock().map_err(|_| AppError::Lock)?;
+    let lim = limit.filter(|n| *n > 0).unwrap_or(5);
+    let mut stmt = conn.prepare(
+        "SELECT key, name, path, type, default_engine, workspace_root, source, updated_at
+         FROM projects
+         WHERE COALESCE(hidden, 0) = 0 AND COALESCE(last_opened_at, 0) > 0
+         ORDER BY last_opened_at DESC, updated_at DESC
+         LIMIT ?1",
+    )?;
+    let mut rows = stmt
+        .query_map(params![lim], |row| {
+            Ok(Project {
+                key: row.get(0)?,
+                name: row.get(1)?,
+                path: row.get(2)?,
+                project_type: row.get(3)?,
+                default_engine: row.get(4)?,
+                workspace_root: row.get(5)?,
+                source: row.get(6)?,
+                updated_at: row.get(7)?,
+                path_valid: None,
+            })
+        })?
+        .collect::<Result<Vec<_>, _>>()?;
+    for p in rows.iter_mut() {
+        fill_path_valid(p);
+    }
+    Ok(rows)
+}
+
+/// 프로젝트 선택 시 `last_opened_at` 을 현재 시각(ms) 으로 갱신.
+///
+/// `selectProject` 가 호출하므로 idempotent 해야 한다 — 동일 프로젝트
+/// 재선택 시 단순히 timestamp 만 갱신. 알 수 없는 key 는 no-op (UPDATE rows = 0).
+#[tauri::command]
+pub fn touch_project_opened_at(key: String, state: State<DbState>) -> Result<(), AppError> {
+    let conn = state.write.lock().map_err(|_| AppError::Lock)?;
+    conn.execute(
+        "UPDATE projects SET last_opened_at = ?1 WHERE key = ?2",
+        params![crate::db::migrations::now_epoch_ms(), key],
+    )?;
+    Ok(())
 }
 
 #[tauri::command]
@@ -121,6 +205,7 @@ pub fn create_project(
                         key: row.get(0)?, name: row.get(1)?, path: row.get(2)?,
                         project_type: row.get(3)?, default_engine: row.get(4)?,
                         workspace_root: row.get(5)?, source: row.get(6)?, updated_at: row.get(7)?,
+                        path_valid: None,
                     }),
                 ).map_err(|_| AppError::NotFound("restored project not found".into()));
             }
@@ -164,7 +249,7 @@ pub fn create_project(
         scaffold_project_dir(path, &input.name);
     }
 
-    Ok(Project {
+    let mut project = Project {
         key: input.key,
         name: input.name,
         path: store_path,
@@ -173,7 +258,10 @@ pub fn create_project(
         workspace_root: input.workspace_root,
         source: input.source,
         updated_at: now,
-    })
+        path_valid: None,
+    };
+    fill_path_valid(&mut project);
+    Ok(project)
 }
 
 /// Create minimal project directory structure and convention files.
@@ -584,24 +672,28 @@ pub fn hide_project(key: String, state: State<DbState>) -> Result<(), AppError> 
 #[tauri::command]
 pub fn get_project(key: String, state: State<DbState>) -> Result<Project, AppError> {
     let conn = state.read.lock().map_err(|_| AppError::Lock)?;
-    conn.query_row(
-        "SELECT key, name, path, type, default_engine, workspace_root, source, updated_at
-         FROM projects WHERE key = ?1",
-        [&key],
-        |row| {
-            Ok(Project {
-                key: row.get(0)?,
-                name: row.get(1)?,
-                path: row.get(2)?,
-                project_type: row.get(3)?,
-                default_engine: row.get(4)?,
-                workspace_root: row.get(5)?,
-                source: row.get(6)?,
-                updated_at: row.get(7)?,
-            })
-        },
-    )
-    .map_err(|_| AppError::NotFound(format!("Project '{}' not found", key)))
+    let mut project = conn
+        .query_row(
+            "SELECT key, name, path, type, default_engine, workspace_root, source, updated_at
+             FROM projects WHERE key = ?1",
+            [&key],
+            |row| {
+                Ok(Project {
+                    key: row.get(0)?,
+                    name: row.get(1)?,
+                    path: row.get(2)?,
+                    project_type: row.get(3)?,
+                    default_engine: row.get(4)?,
+                    workspace_root: row.get(5)?,
+                    source: row.get(6)?,
+                    updated_at: row.get(7)?,
+                    path_valid: None,
+                })
+            },
+        )
+        .map_err(|_| AppError::NotFound(format!("Project '{}' not found", key)))?;
+    fill_path_valid(&mut project);
+    Ok(project)
 }
 
 /// Validate a project path before creation.
@@ -650,5 +742,71 @@ pub fn validate_project_path(path: String) -> Result<PathValidation, AppError> {
         normalized_path: trimmed.to_string(),
         error: None,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::db::models::Project;
+
+    fn project_with_path(path: Option<String>) -> Project {
+        Project {
+            key: "test-key".into(),
+            name: "test".into(),
+            path,
+            project_type: "project".into(),
+            default_engine: None,
+            workspace_root: None,
+            source: "configured".into(),
+            updated_at: 0,
+            path_valid: None,
+        }
+    }
+
+    #[test]
+    fn fill_path_valid_marks_existing_directory_as_true() {
+        // 환경에 의존성 없는 path: cargo manifest dir 은 항상 존재.
+        let manifest = std::env::var("CARGO_MANIFEST_DIR").expect("CARGO_MANIFEST_DIR");
+        let mut p = project_with_path(Some(manifest));
+        fill_path_valid(&mut p);
+        assert_eq!(p.path_valid, Some(true));
+    }
+
+    #[test]
+    fn fill_path_valid_marks_nonexistent_path_as_false() {
+        let mut p = project_with_path(Some(
+            "/this/path/__definitely_does_not_exist__/__claude_t3__".into(),
+        ));
+        fill_path_valid(&mut p);
+        assert_eq!(p.path_valid, Some(false));
+    }
+
+    #[test]
+    fn fill_path_valid_returns_none_when_path_unset() {
+        let mut p = project_with_path(None);
+        fill_path_valid(&mut p);
+        assert!(p.path_valid.is_none());
+    }
+
+    #[test]
+    fn fill_path_valid_returns_none_when_path_empty_or_whitespace() {
+        let mut p = project_with_path(Some(String::new()));
+        fill_path_valid(&mut p);
+        assert!(p.path_valid.is_none());
+
+        let mut p = project_with_path(Some("   ".into()));
+        fill_path_valid(&mut p);
+        assert!(p.path_valid.is_none());
+    }
+
+    #[test]
+    fn fill_path_valid_marks_file_as_false() {
+        // is_dir() 는 directory 만 true. file 은 false.
+        let manifest = std::env::var("CARGO_MANIFEST_DIR").expect("CARGO_MANIFEST_DIR");
+        let cargo_toml = std::path::Path::new(&manifest).join("Cargo.toml");
+        let mut p = project_with_path(Some(cargo_toml.to_string_lossy().to_string()));
+        fill_path_valid(&mut p);
+        assert_eq!(p.path_valid, Some(false));
+    }
 }
 

@@ -285,6 +285,76 @@ pub fn prepare_engine_run(
         }
     }
 
+    // T9-b/T11: cli mode (claude-code) 는 fresh session 첫 send 부터 *모든 large layer 미inject*.
+    //
+    // T9-b (PR #246, 5c126ca) — compressed_memory 만 drop. 사용자 환경에서 여전히 paid API
+    // trigger 거부 (2026-04-30 backend log: T9-b 적용 + fresh session 도 status=err).
+    //
+    // T11 (사용자 insight): "어차피 DB 에 history 있으니 검색해서 가져옴". cli mode 의 모든
+    // large layer 를 default skip + agent 가 필요 시 tool-request 마커로 on-demand 검색
+    // (`recent_turns:N`, `probe_message:ID`, `full_message:ID` 등 — 이미 구현됨, s38 메모리).
+    //
+    // skip 대상 (cli mode 의 fresh session 만):
+    //   - compressed_memory (T9-b 그대로)
+    //   - plan_section + plan_document + artifacts_section + findings_section (structured)
+    //   - retrieval_chunks (rawq 결과, on-demand 가능)
+    //   - cross_session_data
+    //
+    // keep 대상: platform / agent-role / context (recent_context, anchor 2 turns) / skills /
+    // user_prompt — agent 가 first-turn 작업하기 위한 최소 컨텍스트.
+    //
+    // continuation (두 번째 send 부터) 분기는 이미 모두 drop (sdk-url 패턴) 하므로 영향 X.
+    if engine_key == "claude-code" && !data.is_session_continuation {
+        let mut dropped: Vec<&'static str> = Vec::new();
+        if data.compressed_memory.is_some() {
+            data.compressed_memory = None;
+            data.compressed_memory_source = None;
+            dropped.push("compressed_memory");
+        }
+        if data.plan_section.is_some() {
+            data.plan_section = None;
+            dropped.push("plan");
+        }
+        if data.plan_document.is_some() {
+            data.plan_document = None;
+            dropped.push("plan_document");
+        }
+        if data.artifacts_section.is_some() {
+            data.artifacts_section = None;
+            dropped.push("artifacts");
+        }
+        if data.findings_section.is_some() {
+            data.findings_section = None;
+            dropped.push("findings");
+        }
+        if !data.retrieval_chunks.is_empty() {
+            data.retrieval_chunks.clear();
+            dropped.push("retrieval");
+        }
+        if !data.cross_session_data.is_empty() {
+            data.cross_session_data.clear();
+            dropped.push("cross_session");
+        }
+        // T12 (사용자 통찰 2026-04-30): scratchpad 정상 = main chat 의 current_messages 미인용
+        // = anchor 2 turns 안의 specific content 가 paid API trigger 결정적. T11 적용 후
+        // (plan/artifacts/findings drop) 도 거부 = recent_context (anchor 2 turns) cause.
+        // prompt_assembly.rs:421-422 에 "anchor 는 budget 초과여도 무조건 포함" 정책이라
+        // size cap 으로 회피 불가 — current_messages + parent_messages 자체 clear.
+        // agent 가 필요 시 tool-request:recent_turns:N 으로 on-demand 검색.
+        if !data.current_messages.is_empty() {
+            data.current_messages.clear();
+            dropped.push("recent_context");
+        }
+        if !data.parent_messages.is_empty() {
+            data.parent_messages.clear();
+            dropped.push("parent_messages");
+        }
+        if !dropped.is_empty() {
+            eprintln!("[session_freshness] claude-code fresh session → drop large layers (T11+T12): {} (paid API trigger 회피, agent 가 tool-request 로 on-demand 검색)",
+                dropped.join("+"));
+        }
+    }
+
     // Phase B: Pure prompt assembly — no DB lock held
     let (mut enriched_prompt, system_context, ctx_meta) = assemble_prompt(&data, identity_frag);
 
@@ -325,6 +395,28 @@ pub fn finalize_engine_run(
     let now = now_epoch_ms();
     match result {
         Ok(out) => {
+            // T9 (claudeTransportFlipHardeningPlan, 2026-04-30):
+            // claude cli mode (`-p --resume`) 의 finalize 흐름 — 응답에 새 session_id 가
+            // 들어오면 메모리 RESUME_IDS 를 즉시 갱신해 다음 promote_pending_to_delivered
+            // 의 live key lookup 이 새 sid 를 반영하게 한다.
+            //
+            // **scope 좁힘**: sdk-url path 는 `claude_sdk_session::stream_run_sdk` 의
+            // result 핸들러가 stream 도중 RESUME_IDS 를 직접 갱신 + INV-6 무효화
+            // (claude_sdk_session.rs:931-952). 본 helper 호출은 cli mode 에서만 — DO NOT
+            // 가드 (sdk-url path 동작 보존) 의 정신에 맞춰 미진입 보장.
+            //
+            // 다른 엔진 (codex/gemini/ollama/lmstudio) 은 engine_key 가 "claude-code" /
+            // "claude" 일 때만 분기 진입.
+            if matches!(engine_key, "claude-code" | "claude") {
+                if session_freshness::is_claude_cli_mode_external(conversation_id) {
+                    if let Some(ref sid) = out.session_id {
+                        crate::agents::claude_sdk_session::register_cli_resume_id(
+                            conversation_id, sid,
+                        );
+                    }
+                }
+            }
+
             // Session freshness: 성공 시 pending → delivered 승격
             session_freshness::promote_pending_to_delivered(msg_id, conversation_id, engine_key);
 
@@ -359,6 +451,37 @@ pub fn finalize_engine_run(
                      resume_token_engine=CASE WHEN ?1 IS NOT NULL THEN ?2 ELSE resume_token_engine END WHERE id=?3",
                     params![sid, engine_key, conversation_id],
                 );
+            }
+
+            // claudeTransportFlipHardeningPlan T3 — fresh session fallback 처리.
+            // claude.rs::stream_run wrapper 가 stale resume_token detect → 1회 retry
+            // (without `--resume`) 성공 시 fresh_fallback=true 로 표기. 본 분기에서
+            // (a) session_freshness LAST_DELIVERED_KEY clear → 다음 send 의
+            // is_session_continuation=false → ContextPack revival 자동 (full mode +
+            // anchor 2 turns), (b) frontend 에 `claude:fresh_fallback` 이벤트 emit.
+            // 다른 엔진은 fresh_fallback 항상 false 라 분기 진입 X — 회귀 0.
+            if out.fresh_fallback {
+                session_freshness::clear_delivered_key(conversation_id);
+                eprintln!(
+                    "[session_freshness] T3 fresh_fallback for conv={} engine={} → cleared LAST_DELIVERED, next send uses full ContextPack",
+                    &conversation_id[..conversation_id.len().min(12)],
+                    engine_key
+                );
+                let _ = app.emit("claude:fresh_fallback", serde_json::json!({
+                    "messageId": msg_id,
+                    "conversationId": conversation_id,
+                    "engine": engine_key,
+                }));
+            }
+
+            // T1 + T4 — last_rate_limit 이 있으면 frontend RuntimeStatusBar 가 받도록
+            // 별도 이벤트로 emit. UI 가 dismiss 처리. 미관측 시 emit 안 함.
+            if let Some(ref rl) = out.last_rate_limit {
+                let _ = app.emit("claude:rate_limit", serde_json::json!({
+                    "conversationId": conversation_id,
+                    "engine": engine_key,
+                    "rateLimit": rl,
+                }));
             }
             insert_trace_log_with_context(conn, conversation_id, out.input_tokens, out.output_tokens, out.cost_usd, now,
                 &SpanInfo { trace_id: &new_trace_id(), span_id: new_span_id(), parent_span_id: None,
@@ -404,8 +527,28 @@ pub fn finalize_engine_run(
             if let Some(sid) = audit_session_id {
                 let _ = agent_session_tx::audit_rollback(conn, sid, &em);
             }
+            // claudeTransportFlipHardeningPlan T7 — claude 한정 에러 분류.
+            // 다른 엔진은 errorKind="unknown" (분류 없음, 기존 raw 표시 그대로).
+            // frontend 가 errorKind 보고 dedicated 모달 또는 friendly 메시지 가능.
+            // 본 commit 은 분류 라벨만 emit — UI 모달은 후속 PR.
+            let error_kind_label: &'static str = if engine_key.starts_with("claude") {
+                match crate::agents::claude::classify_claude_error(&em) {
+                    crate::agents::claude::ApiErrorKind::StaleResumeToken => "stale_resume_token",
+                    crate::agents::claude::ApiErrorKind::AuthFailure => "auth_failure",
+                    crate::agents::claude::ApiErrorKind::RateLimited => "rate_limited",
+                    crate::agents::claude::ApiErrorKind::QuotaExceeded => "quota_exceeded",
+                    crate::agents::claude::ApiErrorKind::ModelUnavailable => "model_unavailable",
+                    crate::agents::claude::ApiErrorKind::Unknown => "unknown",
+                }
+            } else {
+                "unknown"
+            };
             let _ = app.emit("agent:error", serde_json::json!({
-                "messageId": msg_id, "conversationId": conversation_id, "engine": engine_key, "error": em
+                "messageId": msg_id,
+                "conversationId": conversation_id,
+                "engine": engine_key,
+                "error": em,
+                "errorKind": error_kind_label,
             }));
         }
     }

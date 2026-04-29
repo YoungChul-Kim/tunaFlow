@@ -8,6 +8,17 @@ mod guardrail;
 mod http_api;
 pub mod no_console;
 
+// Native macOS notification bridge (Path B, Plan
+// `docs/plans/nativeNotificationPlan_2026-04-29.md`). Replaces the
+// `tauri-plugin-notification` osascript fallback that surfaces Script Editor
+// on click. Non-macOS OS keeps the existing plugin-notification path —
+// `notification_stub` is only used so command registration compiles cleanly.
+#[cfg(target_os = "macos")]
+mod notification;
+#[cfg(not(target_os = "macos"))]
+#[path = "notification_stub.rs"]
+mod notification;
+
 /// Thread-aware cooperative **stream abort** registry.
 ///
 /// 의미 (옵션 X, `docs/plans/branchCancelSemanticsPlan_2026-04-25.md`):
@@ -130,11 +141,20 @@ pub fn run() {
 
             bootstrap::window::restore_window_state(app)?;
 
+            // Native menu — ensures Settings is reachable from the macOS
+            // menu bar (Cmd+,) and Windows/Linux menu before any project is
+            // selected. Failure is logged but non-fatal: app keeps booting.
+            if let Err(e) = bootstrap::menu::install(app) {
+                eprintln!("[bootstrap] install menu failed: {e}");
+            }
+
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
             // Project
             commands::projects::list_projects,
+            commands::projects::list_recent_projects,
+            commands::projects::touch_project_opened_at,
             commands::projects::create_project,
             commands::projects::get_project,
             commands::projects::hide_project,
@@ -275,8 +295,11 @@ pub fn run() {
             commands::context_hub::context_hub_health,
             commands::context_hub::context_hub_search,
             commands::context_hub::context_hub_get,
+            commands::dependency_install::list_dependencies,
+            commands::dependency_install::install_dependency,
             // Files
             commands::files::list_directory,
+            commands::files::list_project_docs,
             commands::files::read_file_content,
             commands::files::read_text_file,
             // Tracing
@@ -394,6 +417,12 @@ pub fn run() {
             commands::document_index::get_document_index_status,
             // Mobile pairing
             commands::mobile::get_api_connection_info,
+            // Native notification bridge (macOS UNUserNotificationCenter — Plan D)
+            // Non-macOS builds register stubs that return Err; frontend
+            // (`notificationStore.ts`) routes only macOS to these commands.
+            notification::notification_send_native,
+            notification::notification_request_permission,
+            notification::notification_get_status,
         ])
         .on_window_event(|window, event| {
             if let tauri::WindowEvent::CloseRequested { .. } = event {

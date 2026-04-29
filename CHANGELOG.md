@@ -4,7 +4,7 @@ All notable changes to tunaFlow are recorded here.
 Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/);
 versioning follows [SemVer](https://semver.org/spec/v2.0.0.html).
 
-## [0.1.4-beta] - 2026-04-29
+## [0.1.4-beta] - 2026-04-30
 
 🚨 **긴급 패치** — claude CLI 2.1.121 (2026-04-28 자동 update) 의 `--sdk-url`
 정책 변경으로 tunaFlow sdk-session 모드 영구 차단. 모든 사용자 환경에서 claude
@@ -13,6 +13,66 @@ versioning follows [SemVer](https://semver.org/spec/v2.0.0.html).
 
 ### Fixed
 
+- **claude cli mode 의 ContextPack double history 차단** (PR #245~#248,
+  사용자 환경 발견 2026-04-30) — transport flip (`-p --resume`) 후 cli mode
+  가 `session_freshness "적용 제외"` 로 박혀 있어 *Claude session 자체
+  history + tunaFlow ContextPack 의 conversational/structured/anchor 2 turns
+  동시 inject* = double history → paid API 영역 차감 → 사용자 환경
+  (org_level_disabled paygo) 에서 거부 회귀. 사용자 architectural insight
+  ("어차피 DB 에 history 있으니 검색해서 가져옴") 기반 누적 fix:
+  - **T9-a** (PR #245): cli mode session_freshness 적용 — 두 번째 send 부터
+    minimal mode 자동 발동 (`is_session_continuation=true` → drop
+    recent_context + compressed_memory).
+  - **T9-b** (PR #246): cli fresh session 도 `compressed_memory` drop —
+    첫 send 도 paid API trigger 회피.
+  - **T11** (PR #247): cli fresh session 시 plan / plan_document / artifacts
+    / findings / retrieval / cross_session 도 drop.
+  - **T12** (PR #248): cli fresh session 시 current_messages /
+    parent_messages drop — `prompt_assembly.rs:421-422` 의 anchor 2 turns
+    "budget 초과여도 무조건 포함" 정책 우회.
+  - 결과: cli fresh session prompt = platform + agent-role + skills +
+    user_prompt (~15K chars) → paid API trigger 회피. agent 가 필요 시
+    tool-request 마커 (`recent_turns:N` / `probe_message:ID` /
+    `full_message:ID` 등 s38 부터 구현됨) 로 on-demand 검색.
+  - SSOT: `docs/plans/claudeTransportFlipHardeningPlan_2026-04-29.md` §4
+    Task 09~12.
+- **stale resume_token 자동 회복** (PR #238~#242, T1~T8) —
+  ([claudeTransportFlipHardeningPlan](docs/plans/claudeTransportFlipHardeningPlan_2026-04-29.md))
+  한동안 미사용 conversation 의 resume_token 이 (a) 과거 sdk-url 시점
+  session id 이거나 (b) Anthropic 측 TTL 만료 → `--resume <id>` 시도가
+  "out of extra usage" 형태로 거부되던 문제. 사용자 액션 0 자동 회복.
+  - **T1**: claude.rs `stream_run` 이 `rate_limit_event` line parse →
+    `RunOutput.last_rate_limit` 로 노출.
+  - **T2**: `stream_run` wrapper 가 result.is_error keyword 패턴 detect →
+    `--resume` 제거 후 1회 retry. false positive 차단.
+  - **T3**: retry 성공 시 `session_freshness::clear_delivered_key` → 다음
+    send 부터 `is_session_continuation=false` → ContextPack revival 자동.
+    frontend 에 `claude:fresh_fallback` 이벤트 emit.
+  - **T4**: fresh_fallback toast + RuntimeStatusBar 의 rate_limit
+    indicator. claude.ai/settings/usage 링크.
+  - **T5**: DB migration v49 — 7일+ idle conversation 의 stale claude
+    resume_token 일괄 NULL. idempotent.
+  - **T6**: Conversation 우클릭 메뉴에 "Claude 세션 재시작" 항목 추가.
+  - **T7**: claude API 에러 6 종 분류 (stale_resume_token / auth_failure /
+    rate_limited / quota_exceeded / model_unavailable / unknown).
+- **Community follow-up batch** (PR #211, #215~#222) — batmania52 외부
+  사용자 보고 5 plan 일괄 처리:
+  - PR #216: rawq vendor 자동 git clone fallback (build 진입 장벽 차단)
+  - PR #215: onboarding "건너뛰기" 버튼 노출 회복
+  - PR #217+#218: Cmd+, 글로벌 단축키 + macOS 메뉴 + recent projects DB v48
+  - PR #219: docs panel scope toggle (P3-Lite, default='all')
+  - PR #220: native UNUserNotificationCenter bridge (osascript 의존 제거)
+  - PR #222: codex stderr piped (onboarding 진단 도구)
+  - PR #211: result.md contamination — reviewer ContextPack 입력 격리
+- **Reviewer 정책 위반 차단** (PR #211 + 후속) — Codex Reviewer 가
+  `*-result.md` 를 자체 read tool 로 직접 열람 후 잘림 패턴을 verdict 근거로
+  사용하던 정책 위반 패턴 확인. ContextPack 입력 차단 (PR #211, root cause)
+  에 더해 REVIEWER_TEMPLATE 에 "Never read `*-result.md`" 규칙 명시 추가
+  (이 plan). reportSync 의 truncation 도 UTF-8 boundary-safe 8k/2k 상한 +
+  잘림 마커 + sentinel 기반 self-include guard 로 강화.
+- **claude agent watchdog trailing kill 차단** — reader loop 정상 종료 후
+  watchdog 30s sleep 누적이 이미 reap 된 PID 에 `kill -9` 송출하던 race.
+  PID 재사용 시 엉뚱한 프로세스 kill 위험 0 으로 차단. RAII guard 패턴.
 - **claude transport 영구 차단 회귀** (claude CLI 2.1.121 정책 변경):
   - claude 2.1.121 가 `--sdk-url` 의 host 를 `api.anthropic.com` 등 5 도메인만
     허용하도록 hardcoded whitelist 도입. tunaFlow 의 localhost WS 서버 차단
@@ -43,6 +103,64 @@ versioning follows [SemVer](https://semver.org/spec/v2.0.0.html).
 - **검증된 우회 path 후보** (모두 production 부적합): `/etc/hosts` + self-signed
   TLS (system-wide 침범), binary patch (ToS 회색), desktop app 빈틈 (cloud 사용),
   PTY 회귀 (parsing 불안), Anthropic 공식 RC 등록 (가능성 낮음).
+
+### Windows-specific changes
+
+- **첫 실행 동의 dialog + Settings 수동 설치 버튼** (PR #227 / #229 — T4/T5)
+  — `chub` (`@aisuite/chub`) 와 `code-review-graph` 가 Windows 미설치 상태로
+  unavailable 표기되던 회귀 차단. 첫 실행 시 consent dialog 노출, 사용자
+  동의 시 npm/pip 으로 글로벌 설치 (timeout npm 60s / pip 120s, 활성 venv
+  자동 활용). dismiss 시 graceful fallback + Settings → Runtime 카드의
+  "npm/pip 으로 설치" 버튼 노출. silent global install 금지 (INV-DEP-A).
+  SSOT: `docs/plans/windowsDependencyBootstrapPlan_2026-04-29.md`.
+- **`context_hub` / `crg` `resolve_bin` Windows path 인식** (PR #221 / #223
+  — T1/T2) — `%APPDATA%\npm\chub.cmd` 와 `<python>\Scripts\code-review-graph.exe`
+  를 Windows native process `Command::new` 가 정상 spawn 하도록 cfg 분기 +
+  PATH fallback 보강.
+- **Windows 타이틀바 통합** (PR #237 — T-WT-1/2/3) — `decorations: false` +
+  자체 `WindowControls.tsx` (Min / Maximize-Restore / Close 사각 46×32) +
+  좌측 정렬 통일. 기존 *3 라인 헤더* (native title bar + TitleBar.tsx +
+  콘텐츠 헤더) → *1 라인 통합*. mac 도 같은 좌측 정렬 적용 (시각 회귀 0).
+  SSOT: `docs/plans/windowsTitlebarUnificationPlan_2026-04-29.md`.
+- **claude watchdog `taskkill` 분기** (PR #231 — §D) — `Command::new("kill")`
+  은 Unix-only 라 Windows 에서 idle_timeout (600s) 시 child `claude.exe` 가
+  zombie 잔존 위험. `cfg(unix)` 는 `kill -9`, `cfg(windows)` 는
+  `taskkill /F /PID` 분기.
+- **`kill_orphan_sdk_processes` Windows no-op stub** (PR #235) — Unix-only
+  `pgrep`/`ps` 가 Windows 에서 silently no-op 였음을 explicit 화. 실제
+  orphan 처리는 `windowsOrphanProcessHardeningPlan` (P3, post-beta) 후속.
+- **conventions `@import` path separator 정규화** (PR #213) — `Path::display()`
+  Windows backslash 출력으로 Claude Code `@path` syntax 깨지던 회귀 fix.
+- **`commands/files` 테스트 path-separator 정규화** (PR #226 — R-W-7
+  hotfix) — `flatten_md_paths` test helper 정규화. escalate-1~4 + 동일 패턴
+  3건 일괄 처리, production 영향 0.
+- **DB project path stale fallback** (PR #234 — Track 3) — mac 동기화 DB 의
+  `projects.path` 가 Windows 에서 invalid 일 때 file IO timeout hang 차단.
+  startup load 시점 validate + UI fallback, DB row 보존.
+- **claude SDK 세션 stderr surface** (PR #233 — Track 2 진단 도구) —
+  `Stdio::null()` → `Stdio::piped()` + `[sdk-session-stderr]` 라인 forward.
+  PR #222 (codex stderr surface) 동등 패턴.
+
+### Internal / housekeeping (Windows)
+
+- **Rust warning silence** (PR #230) — `unused_imports` 1건 + `dead_code` 2건
+  (test-only `InvokeClaude::Empty/Stub` + `NotificationAuthStatus` stub
+  variants). 동작 변경 0.
+- **Plan / handoff docs**: `windowsDependencyBootstrapPlan` (#214/#236),
+  `windowsCiPipelinePlan` (#224, mac+win cross-OS regression detection
+  정책), `windowsTitlebarUnificationPlan` (#228/#236), 그리고 status 갱신
+  (#232 `complete`).
+
+### Known issues (Windows)
+
+- **첫 실행 후 첫 메시지 ~30초 지연** — Microsoft Defender 의 first-scan
+  영향으로 추정 (정적 분석 결과 가설 (b) 가장 유력). **1분 후 다시 보내면
+  정상 동작**. Track 2 진단 도구 (PR #233) 가 다음 cold start 시 backend
+  stderr 에 root cause 를 노출 → fix axis 는 v0.1.5 정식 release 또는 캡처
+  후 별 PR. SSOT: `docs/plans/windowsBetaHardeningPlan_2026-04-26.md` §B.
+- **Windows 11 snap layouts overlay 미표시** — Maximize 버튼 hover 시 Win11
+  22H2+ 의 snap layouts 가 안 뜸. `decorations: false` 와 잠재 충돌 진단 후
+  v0.1.5 에서 fix (T-WT-5 / Q-WT-3). SSOT: `windowsTitlebarUnificationPlan`.
 
 ## [0.1.3-beta] - 2026-04-26
 

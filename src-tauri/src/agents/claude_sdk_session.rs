@@ -364,6 +364,55 @@ pub fn has_active_session(conv_id: &str) -> bool {
     SESSIONS.lock().contains_key(&key)
 }
 
+/// claude `-p` cli mode (T9, claudeTransportFlipHardeningPlan 2026-04-30) — finalize 시점에
+/// claude 응답의 새 session_id 를 메모리 RESUME_IDS 에 갱신한다.
+///
+/// sdk-url path 는 `stream_run_sdk` 의 result 이벤트 핸들러에서 RESUME_IDS 에 직접
+/// insert (line 933) 하지만, cli path 는 `claude.rs::stream_run` 외부에서 finalize 가
+/// 진행되므로 별도 hook 이 없다. 이 helper 는 cli path 의 finalize 직전에 호출되어
+/// `session_freshness::current_session_key` 의 다음 lookup 이 새 sid 를 반영하도록 한다.
+///
+/// **Identity 원칙**: RESUME_IDS 는 sdk-url 와 cli mode 가 공유. mode 는 conv lifetime
+/// 동안 고정 (env var 기반) 이므로 충돌 없음. brand:* 는 root main key 로 normalize.
+///
+/// **DO NOT 가드** (T9): 본 helper 는 *additive* — sdk-url path 의 result 핸들러 동작
+/// 변경 0. 단지 cli path 가 RESUME_IDS 에 접근할 수 있는 새 진입점 추가.
+pub fn register_cli_resume_id(conv_id: &str, sid: &str) {
+    let key = session_key_for(conv_id);
+    let prior = RESUME_IDS.lock().insert(key.clone(), sid.to_string());
+    if let Some(p) = prior {
+        if p != sid {
+            // sdk-url path 의 INV-6 와 동일 정책 — sid 가 변하면 LAST_DELIVERED 무효화.
+            // cli path 의 finalize 흐름에서 새 sid 가 들어왔다면 다음 send 를 full 로
+            // 강제해 history 일관성 유지 (사용자가 외부에서 session 재생성한 시나리오).
+            eprintln!(
+                "[cli-session] RESUME_IDS sid changed (prior={} new={}) for conv={} (key={}) — \
+                 invalidating LAST_DELIVERED",
+                p, sid, conv_id, key
+            );
+            crate::commands::agents_helpers::send_common::session_freshness::clear_delivered_key(
+                conv_id,
+            );
+            if key != conv_id {
+                crate::commands::agents_helpers::send_common::session_freshness::clear_delivered_key(
+                    &key,
+                );
+            }
+        }
+    }
+}
+
+/// 테스트 전용 — RESUME_IDS leak 방지.
+///
+/// session_freshness 의 unit test 가 `register_cli_resume_id` 호출 후 정리할 때 사용.
+/// 다른 테스트의 conv_id 와 충돌하지 않도록 unique conv 를 쓰면 strictly 필요하지
+/// 않지만, 안전 마진으로 유지.
+#[cfg(test)]
+pub fn clear_resume_id_for_test(conv_id: &str) {
+    let key = session_key_for(conv_id);
+    RESUME_IDS.lock().remove(&key);
+}
+
 /// ContextPack freshness 판정용 — 현재 활성 세션의 식별 키.
 ///
 /// **Identity 원칙** (sessionContinuityFixPlan.md task-01): 식별자는 claude 자체가
@@ -492,7 +541,12 @@ async fn spawn_session(
         // stdin/stdout piped — stdin: 메시지 전달, stdout: 이벤트 수신(HTTP POST 병행)
         .stdin(std::process::Stdio::piped())
         .stdout(std::process::Stdio::piped())
-        .stderr(std::process::Stdio::null())
+        // stderr 를 piped 로 surface — 첫 메시지 stuck (Defender first-spawn /
+        // connection refused / version 불일치 등) 의 root cause 가 invisible 인
+        // 회귀 차단. 별 task 에서 line 단위 drain (drain 실패 시 buffer full 로
+        // claude 가 hang 함).
+        // PR #222 codex stderr surface 와 동등 패턴.
+        .stderr(std::process::Stdio::piped())
         .kill_on_drop(true);
 
     // `--session-id` vs `--resume` 상호배타 (claude CLI 2.1.x 제약).
@@ -522,6 +576,23 @@ async fn spawn_session(
         .stdout
         .take()
         .ok_or_else(|| AppError::Agent("sdk-session: could not get child stdout".into()))?;
+
+    // stderr 핸들 추출 + drain 태스크 — claude 의 startup 실패 (Defender freeze /
+    // connection refused / version 미스매치 등) 가 backend stderr 로 즉시 표면화
+    // 되도록 한다. WS connect 30s timeout 도달 전 claude 가 stderr 로 무엇을
+    // 토했는지가 가장 빠른 root-cause 신호. 30s 안에 connect 못 하는 케이스라도
+    // 이 태스크는 분리되어 있어 timeout 처리 흐름을 막지 않는다.
+    if let Some(child_stderr) = child.stderr.take() {
+        let conv_id_for_log = conv_id.to_string();
+        tokio::spawn(async move {
+            use tokio::io::{AsyncBufReadExt, BufReader};
+            let mut lines = BufReader::new(child_stderr).lines();
+            while let Ok(Some(line)) = lines.next_line().await {
+                if line.trim().is_empty() { continue; }
+                eprintln!("[sdk-session-stderr] conv={} {}", conv_id_for_log, line);
+            }
+        });
+    }
 
     // claude WS 연결 대기 (최대 30초)
     tokio::time::timeout(
@@ -946,6 +1017,9 @@ where
                     input_tokens: final_input,
                     output_tokens: final_output,
                     session_id: parsed.session_id,
+                    // sdk-session path 는 본 plan scope 외 — 호환성만 유지.
+                    last_rate_limit: None,
+                    fresh_fallback: false,
                 });
             }
             "control_request" => {
@@ -983,6 +1057,11 @@ pub fn shutdown_all_sessions() {
 
 /// Kill any orphaned `claude --sdk-url` processes from previous app runs.
 /// Called on app startup to prevent zombie processes that consume rate limit quota.
+///
+/// Unix path uses `pgrep -f` + `ps -o ppid=` to detect PPID=1 orphans, then
+/// `kill <pid>`. Windows would need WMIC / PowerShell parent-PID +
+/// command-line introspection — deferred (see windows variant below).
+#[cfg(unix)]
 pub fn kill_orphan_sdk_processes() {
     use std::process::Command;
     let output = match Command::new("pgrep").no_console().args(["-f", "claude.*--sdk-url"]).output() {
@@ -1012,6 +1091,28 @@ pub fn kill_orphan_sdk_processes() {
     if killed > 0 {
         eprintln!("[sdk-session] cleaned up {} orphan sdk-url process(es)", killed);
     }
+}
+
+/// Windows variant — intentional no-op for now.
+///
+/// The Unix path relies on `pgrep` / `ps -o ppid=` which do not exist on
+/// Windows. Spawning them previously failed silently (`Err(_) => return` on
+/// the first call), making the no-op non-obvious — this `cfg(windows)` stub
+/// makes the absence explicit.
+///
+/// Why deferred:
+/// - Random per-session port (`127.0.0.1:0`) + UUID session_id mean orphaned
+///   `claude.exe --sdk-url` processes do not collide with new sessions or
+///   directly saturate user-visible quota in practice.
+/// - Proper Windows orphan detection requires WMIC / PowerShell command-line
+///   + parent-PID introspection — deferred to a separate
+///   `windowsOrphanProcessHardeningPlan` (P3, post-beta).
+/// - The §D watchdog `taskkill` patch (PR #231) already handles the more
+///   common in-session idle-timeout kill path; this stub covers only the
+///   cross-app-restart leak path, which is rarer.
+#[cfg(windows)]
+pub fn kill_orphan_sdk_processes() {
+    // intentional no-op — see doc comment above for rationale and follow-up plan.
 }
 
 // ─── Tests ─────────────────────────────────────────────────────────────────────
