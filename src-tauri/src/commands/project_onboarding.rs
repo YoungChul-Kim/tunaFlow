@@ -3,6 +3,9 @@ use std::sync::{Arc, Mutex, OnceLock};
 use serde::Serialize;
 use tauri::{AppHandle, Emitter};
 
+use crate::agents::resolve::{NpmCliConfig, resolve_npm_cli};
+use crate::no_console::NoConsole;
+
 use super::projects::detect_project_info;
 
 // ─── Cancellation flag ───────────────────────────────────────────────────────
@@ -574,15 +577,45 @@ async fn call_cli_agent(
 ) -> Result<String, String> {
     use std::process::Stdio;
 
-    let mut cmd = tokio::process::Command::new(bin);
+    // resolve_npm_cli: Windows 에서 .cmd 래퍼 대신 실제 바이너리(claude.exe 등)를
+    // 직접 찾아 준다. cmd /C 우회 없이 직접 spawn → 인코딩 문제 없음.
+    let resolved = match engine {
+        "claude" => resolve_npm_cli(&NpmCliConfig {
+            bin_name: "claude",
+            npm_package: "@anthropic-ai/claude-code",
+            npm_entry: "bin/claude.exe",
+        }),
+        "gemini" => resolve_npm_cli(&NpmCliConfig {
+            bin_name: "gemini",
+            npm_package: "@google/gemini-cli",
+            npm_entry: "dist/index.js",
+        }),
+        "codex" => resolve_npm_cli(&NpmCliConfig {
+            bin_name: "codex",
+            npm_package: "@openai/codex",
+            npm_entry: "bin/codex.js",
+        }),
+        _ => return Err(format!("지원하지 않는 CLI 엔진: {engine}")),
+    };
+
+    let mut cmd = tokio::process::Command::new(&resolved.command);
+    cmd.no_console();
+    if let Some(ref script) = resolved.script_arg {
+        cmd.arg(script);
+    }
+
     match engine {
         "claude" => {
             cmd.args(["-p", prompt, "--max-turns", "1", "--output-format", "text"]);
             if let Some(m) = model { cmd.args(["--model", m]); }
+            // stdin null: Tauri 앱에서 열린 stdin 없이 claude가 3초 대기 후
+            // exit 1 하는 현상 방지 ("no stdin data received" 경고 차단).
+            cmd.stdin(Stdio::null());
         }
         "gemini" => {
             cmd.args(["-p", prompt]);
             if let Some(m) = model { cmd.args(["-m", m]); }
+            cmd.stdin(Stdio::null());
         }
         "codex" => {
             cmd.args(["exec", "--full-auto", "-"]);

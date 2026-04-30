@@ -43,8 +43,13 @@ async fn probe_cli(engine: &str, bin: &str, version_args: &[&str]) -> AgentDetec
         note: None,
     };
 
-    // `which <bin>`
-    let which_fut = Command::new("which").no_console().arg(bin).output();
+    // `which <bin>` (Unix) / `where <bin>` (Windows)
+    #[cfg(target_os = "windows")]
+    let which_cmd = "where";
+    #[cfg(not(target_os = "windows"))]
+    let which_cmd = "which";
+
+    let which_fut = Command::new(which_cmd).no_console().arg(bin).output();
     let which_out = match timeout(Duration::from_millis(PROBE_TIMEOUT_MS), which_fut).await {
         Ok(Ok(out)) => out,
         Ok(Err(e)) => { det.note = Some(format!("which error: {e}")); return det; }
@@ -54,7 +59,13 @@ async fn probe_cli(engine: &str, bin: &str, version_args: &[&str]) -> AgentDetec
         det.note = Some("not found in PATH".into());
         return det;
     }
-    let path = String::from_utf8_lossy(&which_out.stdout).trim().to_string();
+    // `where` on Windows may return multiple lines; take only the first one
+    let path = String::from_utf8_lossy(&which_out.stdout)
+        .lines()
+        .next()
+        .unwrap_or("")
+        .trim()
+        .to_string();
     if path.is_empty() {
         det.note = Some("which returned empty".into());
         return det;
@@ -63,6 +74,14 @@ async fn probe_cli(engine: &str, bin: &str, version_args: &[&str]) -> AgentDetec
     det.installed = true;
 
     // `<bin> --version` (optional — 실패해도 installed 유지)
+    // Windows: .cmd 파일은 shell 없이 실행 불가 → `cmd /C <path> --version`
+    #[cfg(target_os = "windows")]
+    let ver_fut = {
+        let mut c = Command::new("cmd");
+        c.no_console().arg("/C").arg(&path).args(version_args);
+        c.output()
+    };
+    #[cfg(not(target_os = "windows"))]
     let ver_fut = Command::new(&path).no_console().args(version_args).output();
     if let Ok(Ok(out)) = timeout(Duration::from_millis(PROBE_TIMEOUT_MS), ver_fut).await {
         if out.status.success() {

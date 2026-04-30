@@ -194,21 +194,35 @@ console.log('[]');
 /// symlinks to catch auto-updater-managed installs where `~/.local/bin/claude`
 /// points to `~/.local/share/claude/versions/<n>`).
 fn resolve_claude_binary() -> Option<PathBuf> {
-    let (lookup_cmd, arg) = if cfg!(windows) {
-        ("where", "claude")
-    } else {
-        ("which", "claude")
-    };
-    let output = std::process::Command::new(lookup_cmd).no_console().arg(arg).output().ok()?;
-    if !output.status.success() { return None; }
-    let first_line = String::from_utf8_lossy(&output.stdout)
-        .lines()
-        .next()?
-        .trim()
-        .to_string();
-    if first_line.is_empty() { return None; }
-    // Follow symlink — auto-updater flips the symlink on update.
-    std::fs::canonicalize(PathBuf::from(first_line)).ok()
+    #[cfg(target_os = "windows")]
+    {
+        if let Ok(appdata) = std::env::var("APPDATA") {
+            let exe = PathBuf::from(&appdata)
+                .join("npm")
+                .join("node_modules")
+                .join("@anthropic-ai")
+                .join("claude-code")
+                .join("bin")
+                .join("claude.exe");
+            if exe.exists() {
+                return Some(exe);
+            }
+        }
+        return None;
+    }
+
+    #[cfg(not(target_os = "windows"))]
+    {
+        let output = std::process::Command::new("which").no_console().arg("claude").output().ok()?;
+        if !output.status.success() { return None; }
+        let first_line = String::from_utf8_lossy(&output.stdout)
+            .lines()
+            .next()?
+            .trim()
+            .to_string();
+        if first_line.is_empty() { return None; }
+        std::fs::canonicalize(PathBuf::from(first_line)).ok()
+    }
 }
 
 /// Extract strings that look like Claude model IDs from an arbitrary byte

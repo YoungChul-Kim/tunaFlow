@@ -140,6 +140,12 @@ fn resolve_windows_npm(config: &NpmCliConfig) -> Option<ResolvedBinary> {
         entry_path = entry_path.join(pkg).join(config.npm_entry);
 
         if entry_path.exists() {
+            if matches!(
+                entry_path.extension().and_then(|e| e.to_str()),
+                Some("exe" | "cmd" | "bat")
+            ) {
+                return Some(ResolvedBinary::direct(entry_path.to_string_lossy().to_string()));
+            }
             let node = which_or("node", "node");
             return Some(ResolvedBinary::with_script(node, entry_path.to_string_lossy().to_string()));
         }
