@@ -187,6 +187,7 @@ pub async fn start_claude_stream(
     let cid = input.conversation_id.clone();
     let pr = input.prompt.clone();
     let mo = input.model.clone();
+    let image_paths = input.image_paths.clone();
 
     // DB-heavy work off main thread
     let (prep, system_prompt) = tokio::task::spawn_blocking(move || -> Result<_, AppError> {
@@ -234,7 +235,7 @@ pub async fn start_claude_stream(
             let c2 = app.clone(); let ci = msg_id.clone(); let cc = cid2.clone();
             let t0 = std::time::Instant::now();
             let rr = anthropic_sdk::stream_run(
-                claude::RunInput { prompt: pr, model: mo.clone(), system_prompt: sp, resume_token: None, project_path, image_paths: Vec::new() },
+                claude::RunInput { prompt: pr, model: mo.clone(), system_prompt: sp, resume_token: None, project_path, image_paths: image_paths.clone() },
                 move |t| { let _ = pa.emit("claude:progress", ChunkPayload { message_id: pi.clone(), conversation_id: pc.clone(), text: t }); },
                 move |t| { let _ = c2.emit("claude:chunk", ChunkPayload { message_id: ci.clone(), conversation_id: cc.clone(), text: t }); },
             ).await;
@@ -265,7 +266,7 @@ pub async fn start_claude_stream(
             let t0 = std::time::Instant::now();
             let rr = claude_sdk_session::stream_run_sdk(
                 &cid2,
-                claude::RunInput { prompt: ep, model: mo.clone(), system_prompt: None, resume_token: None, project_path, image_paths: Vec::new() },
+                claude::RunInput { prompt: ep, model: mo.clone(), system_prompt: None, resume_token: None, project_path, image_paths: image_paths.clone() },
                 move |t| { let _ = pa.emit("claude:progress", ChunkPayload { message_id: pi.clone(), conversation_id: pc.clone(), text: t }); },
                 move |t| { let _ = c2.emit("claude:chunk", ChunkPayload { message_id: ci.clone(), conversation_id: cc.clone(), text: t }); },
                 { let c = cid2.clone(); let r = cancel_arc; move || { r.lock().remove(&c) } },
@@ -290,7 +291,7 @@ pub async fn start_claude_stream(
             let c2 = app.clone(); let ci = msg_id.clone(); let cc = cid.clone();
             let t0 = std::time::Instant::now();
             let rr = claude::stream_run(
-                claude::RunInput { prompt: pr, model: mo.clone(), system_prompt, resume_token, project_path, image_paths: Vec::new() },
+                claude::RunInput { prompt: pr, model: mo.clone(), system_prompt, resume_token, project_path, image_paths: image_paths.clone() },
                 move |t| { let _ = pa.emit("claude:progress", ChunkPayload { message_id: pi.clone(), conversation_id: pc.clone(), text: t }); },
                 move |t| { let _ = c2.emit("claude:chunk", ChunkPayload { message_id: ci.clone(), conversation_id: cc.clone(), text: t }); },
                 { let c = cid.clone(); let r = cancel_arc; move || { r.lock().remove(&c) } },
