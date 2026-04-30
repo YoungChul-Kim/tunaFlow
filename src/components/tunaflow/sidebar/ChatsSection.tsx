@@ -151,6 +151,7 @@ export function ChatsSection({
             <SidebarItemContextMenu
               onRename={() => { /* InlineRename handles this inline */ }}
               onDelete={filteredChats.length > 1 ? () => handleDelete(conv.id, conv.customLabel ?? conv.label, { stopPropagation: () => {} } as React.MouseEvent) : undefined}
+              onRestartClaudeSession={() => restartClaudeSession(conv.id)}
             >
             <TreeRow depth={0} active={isActive} isParent={hasChildren}
               icon={
