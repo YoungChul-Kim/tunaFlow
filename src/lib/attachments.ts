@@ -39,6 +39,14 @@ export const RESIZE_THRESHOLD = 2 * 1024 * 1024; // 2MB
 /** 리사이즈 시 긴 변 최대. 일반적인 스크린샷 수준은 보존. */
 export const RESIZE_MAX_DIMENSION = 2048;
 
+/** Anthropic API가 vision으로 처리할 수 있는 MIME 타입. */
+export const CLAUDE_VISION_SUPPORTED_TYPES = new Set([
+  "image/jpeg",
+  "image/png",
+  "image/gif",
+  "image/webp",
+]);
+
 // ─── Image resize ──────────────────────────────────────────────────────────
 
 /** 이미지 bytes 를 Canvas 로 디코드 → JPEG q85 로 재인코딩.
@@ -97,7 +105,7 @@ export async function maybeResizeImage(
 // ─── Helpers ────────────────────────────────────────────────────────────────
 
 function isImageMime(mime: string): boolean {
-  return mime.startsWith("image/");
+  return CLAUDE_VISION_SUPPORTED_TYPES.has(mime);
 }
 
 /** `data:image/png;base64,AAAA...` 에서 payload 만 추출. plain base64 면 그대로 리턴. */
@@ -184,13 +192,16 @@ export function appendAttachmentsToPrompt(prompt: string, attachments: Attachmen
       : `${(a.size / 1024).toFixed(0)}KB`;
     return `- ${a.relPath} (${a.name}, ${sizeLabel})`;
   });
+  const hasImages = attachments.some((a) => a.isImage);
   return [
     prompt.trim(),
     "",
     "[첨부 파일]",
     ...lines,
     "",
-    "위 파일의 내용을 확인하려면 Read 툴로 해당 경로를 읽으세요. 이미지는 vision 분석 가능합니다.",
+    hasImages
+      ? "위 파일의 내용을 확인하려면 Read 툴로 해당 경로를 읽으세요. 이미지(JPEG/PNG/GIF/WEBP)는 vision 분석 가능합니다."
+      : "위 파일의 내용을 확인하려면 Read 툴로 해당 경로를 읽으세요.",
   ].join("\n");
 }
 
