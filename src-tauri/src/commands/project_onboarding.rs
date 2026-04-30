@@ -570,7 +570,7 @@ async fn await_cli_with_cancel(
 /// codex agent behavior.
 async fn call_cli_agent(
     engine: &str,
-    bin: &str,
+    _bin: &str,
     prompt: &str,
     model: Option<&str>,
     cancel: &AtomicBool,
