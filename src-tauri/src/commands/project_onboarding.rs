@@ -606,11 +606,12 @@ async fn call_cli_agent(
 
     match engine {
         "claude" => {
-            cmd.args(["-p", prompt, "--max-turns", "1", "--output-format", "text"]);
+            // Windows 명령줄 길이 한도(32KB, os error 206) 우회:
+            // 긴 분석 프롬프트를 -p <arg> 대신 stdin(pipe)으로 전달.
+            // `claude -p -` = stdin에서 프롬프트 읽기.
+            cmd.args(["-p", "-", "--max-turns", "1", "--output-format", "text"]);
             if let Some(m) = model { cmd.args(["--model", m]); }
-            // stdin null: Tauri 앱에서 열린 stdin 없이 claude가 3초 대기 후
-            // exit 1 하는 현상 방지 ("no stdin data received" 경고 차단).
-            cmd.stdin(Stdio::null());
+            cmd.stdin(Stdio::piped());
         }
         "gemini" => {
             cmd.args(["-p", prompt]);
@@ -634,8 +635,8 @@ async fn call_cli_agent(
     let mut child = spawn_res
         .map_err(|e| format!("{engine} CLI 실행 실패: {e}. {engine}가 설치되어 있는지 확인하세요."))?;
 
-    // codex만 stdin 파이프
-    if engine == "codex" {
+    // claude / codex: stdin 파이프로 프롬프트 전달
+    if engine == "codex" || engine == "claude" {
         if let Some(mut stdin) = child.stdin.take() {
             use tokio::io::AsyncWriteExt;
             let prompt_owned = prompt.to_string();

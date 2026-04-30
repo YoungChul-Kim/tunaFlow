@@ -19,6 +19,19 @@ pub fn resolve_cwd(project_path: Option<&str>) -> PathBuf {
     std::env::temp_dir()
 }
 
+/// Resolve the claude binary path via shared resolve module.
+/// Windows: tries %APPDATA%\npm\node_modules\@anthropic-ai\claude-code\bin\claude.exe,
+/// then falls back to claude.cmd. Unix: fnm/nvm lookup → standard paths → bare name.
+fn resolve_claude() -> (String, Option<String>) {
+    use super::resolve::{NpmCliConfig, resolve_npm_cli};
+    let resolved = resolve_npm_cli(&NpmCliConfig {
+        bin_name: "claude",
+        npm_package: "@anthropic-ai/claude-code",
+        npm_entry: "bin/claude.exe",
+    });
+    (resolved.command, resolved.script_arg)
+}
+
 // ─── Streaming JSON types (--output-format stream-json) ───────────────────
 
 /// One JSON line emitted by `claude --output-format stream-json`
@@ -341,8 +354,12 @@ where
     G: FnMut(String),
     C: Fn() -> bool,
 {
-    let mut cmd = Command::new("claude");
+    let (claude_cmd, claude_script) = resolve_claude();
+    let mut cmd = Command::new(&claude_cmd);
     cmd.no_console();
+    if let Some(ref script) = claude_script {
+        cmd.arg(script);
+    }
     cmd.arg("-p")
         .arg(&input.prompt)
         .arg("--output-format")
@@ -616,8 +633,12 @@ where
 /// Caller must NOT hold the DbState lock while calling this function,
 /// since the subprocess can take an arbitrarily long time.
 pub fn run(input: RunInput) -> Result<RunOutput, AppError> {
-    let mut cmd = Command::new("claude");
+    let (claude_cmd, claude_script) = resolve_claude();
+    let mut cmd = Command::new(&claude_cmd);
     cmd.no_console();
+    if let Some(ref script) = claude_script {
+        cmd.arg(script);
+    }
     cmd.arg("-p")
         .arg(&input.prompt)
         .arg("--output-format")
