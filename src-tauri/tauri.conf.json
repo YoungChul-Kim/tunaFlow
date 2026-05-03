@@ -30,6 +30,7 @@
   "bundle": {
     "active": true,
     "targets": ["app", "dmg", "appimage", "deb", "rpm", "nsis"],
+    "resources": ["resources/mobile-spa"],
     "windows": {
       "nsis": {
         "displayLanguageSelector": false

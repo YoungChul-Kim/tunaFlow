@@ -20,7 +20,7 @@ fn read_api_token() -> Option<String> {
 }
 
 /// Return everything a mobile app needs to connect:
-/// - url:   http://<LAN_IP>:19840  (or localhost fallback)
+/// - url:   http://<LAN_IP>:<PORT>  (19841 in debug, 19840 in release)
 /// - token: the Bearer token
 ///
 /// Used by the desktop Settings panel to generate a QR code.
@@ -28,8 +28,9 @@ fn read_api_token() -> Option<String> {
 pub fn get_api_connection_info() -> serde_json::Value {
     let ip = get_local_ip().unwrap_or_else(|| "localhost".to_string());
     let token = read_api_token().unwrap_or_default();
+    let port: u16 = if cfg!(debug_assertions) { 19841 } else { 19840 };
     serde_json::json!({
-        "url":   format!("http://{}:19840", ip),
+        "url":   format!("http://{}:{}", ip, port),
         "token": token,
     })
 }

@@ -28,6 +28,7 @@ pub async fn auth_middleware(
     if path == "/api/health"
         || path == "/api/v1/health"
         || path == "/ws/events"
+        || path.starts_with("/mobile")
     {
         return next.run(request).await;
     }

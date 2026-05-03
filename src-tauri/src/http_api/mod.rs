@@ -26,9 +26,14 @@ use axum::{
 };
 use tokio::sync::broadcast;
 use tower_http::cors::CorsLayer;
+use tower_http::services::{ServeDir, ServeFile};
+use tauri::Manager;
 
 use crate::db::DbState;
 
+#[cfg(debug_assertions)]
+const DEFAULT_PORT: u16 = 19841;
+#[cfg(not(debug_assertions))]
 const DEFAULT_PORT: u16 = 19840;
 pub(super) type CancelArc = std::sync::Arc<parking_lot::Mutex<std::collections::HashSet<String>>>;
 
@@ -112,6 +117,35 @@ pub fn start_server(db: DbState, app_handle: tauri::AppHandle, cancel: CancelArc
         cancel,
     };
 
+    let mobile_spa_dir = {
+        let candidate = state.app_handle
+            .path()
+            .resource_dir()
+            .map(|p| p.join("mobile-spa"))
+            .unwrap_or_else(|_| std::path::PathBuf::from("resources/mobile-spa"));
+        if candidate.exists() {
+            candidate
+        } else {
+            // Dev mode: resource_dir() points to target/debug/; walk up to find
+            // src-tauri/resources/mobile-spa next to the Cargo workspace.
+            std::env::current_exe()
+                .ok()
+                .and_then(|exe| {
+                    // exe = …/src-tauri/target/debug/tuna-flow[.exe]
+                    // parent×3 = src-tauri/
+                    exe.parent()   // debug/
+                        .and_then(|p| p.parent())  // target/
+                        .and_then(|p| p.parent())  // src-tauri/
+                        .map(|p| p.join("resources").join("mobile-spa"))
+                        .filter(|p| p.exists())
+                })
+                .unwrap_or_else(|| {
+                    eprintln!("[http-api] mobile-spa not found at {:?} — /mobile/ disabled (run `cd mobile-spa && npm run build` first)", candidate);
+                    candidate
+                })
+        }
+    };
+
     // Bridge Tauri events → broadcast channel. The bridge forwards through
     // `broadcast_event`, so every event ends up in `ws_event_log` regardless
     // of whether it originated from a Tauri command or an HTTP handler.
@@ -122,7 +156,7 @@ pub fn start_server(db: DbState, app_handle: tauri::AppHandle, cancel: CancelArc
     events::spawn_ttl_cleanup(db.clone());
 
     tauri::async_runtime::spawn(async move {
-        let app = build_router(state);
+        let app = build_router(state, mobile_spa_dir);
         let addr = std::net::SocketAddr::from(([0, 0, 0, 0], DEFAULT_PORT));
         eprintln!("[http-api] starting on http://{}", addr);
         let listener = match tokio::net::TcpListener::bind(addr).await {
@@ -183,7 +217,7 @@ async fn deprecation_header_middleware(
     res
 }
 
-fn build_router(state: ApiState) -> Router {
+fn build_router(state: ApiState, mobile_spa_dir: std::path::PathBuf) -> Router {
     // Single definition of the REST surface. Every route is authored
     // without any `/api` prefix and then mounted under BOTH `/api/v1`
     // (canonical) and `/api` (legacy, deprecation-tagged). Removing the
@@ -247,12 +281,17 @@ fn build_router(state: ApiState) -> Router {
         .route("/projects/{key}/insight/findings/count", get(insight::count_findings))
         .route("/insight/findings/{id}/status", post(insight::update_finding_status));
 
+    let mobile_service = ServeDir::new(&mobile_spa_dir)
+        .fallback(ServeFile::new(mobile_spa_dir.join("index.html")));
+
     Router::new()
         .nest("/api/v1", rest.clone())
         .nest("/api", rest)
         // WebSocket stays at the root; it's cheap to add /api/v1/ws later
         // but existing /ws/events contract is stable for mobile.
         .route("/ws/events", get(ws::ws_events))
+        // Mobile SPA static serving — auth skipped via auth_middleware path check
+        .nest_service("/mobile", mobile_service)
         .layer(middleware::from_fn_with_state(state.clone(), auth::auth_middleware))
         .layer(middleware::from_fn(deprecation_header_middleware))
         .layer(CorsLayer::permissive())

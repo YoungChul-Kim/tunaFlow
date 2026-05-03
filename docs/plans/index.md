@@ -16,6 +16,7 @@
 
 | 문서 | 설명 |
 |------|------|
+| [mobileWebSpaPlan_2026-05-02](./mobileWebSpaPlan_2026-05-02.md) | **P1 (feats/mobile-support)** — 스마트폰 브라우저에서 tunaFlow 사용. 독립 Vite+React SPA + HTTP API 클라이언트 + axum ServeDir. 4 task. Connection Discovery UI 이미 완성 |
 | [betaReadinessPlan](./betaReadinessPlan.md) | — |
 | [betaReleaseReadinessPlan](./betaReleaseReadinessPlan.md) | — |
 | [betaRtUpgradeSprintPlan_2026-04-15](./betaRtUpgradeSprintPlan_2026-04-15.md) | — |
