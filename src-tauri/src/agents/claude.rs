@@ -192,6 +192,26 @@ pub struct RunOutput {
     /// revival 자동 발동, (c) frontend 에 `claude:fresh_fallback` event emit.
     /// claudeTransportFlipHardeningPlan T2 + T3.
     pub fresh_fallback: bool,
+    /// (claudeSdkSessionWindowGuardPlan Task 02) `Some((prior_tokens, threshold))`
+    /// = stream_run_sdk 진입 직후 SDK 누적 window guard 가 fresh-rotate trigger
+    /// 발동했음. finalize_engine_run 이 본 정보를 보고 frontend 에 Tauri event
+    /// `tunaflow:sdk-session-window-rotated` 발행 → sonner toast 알림. None 이면
+    /// rotate 미발생 (정상 path) — 이벤트 발행 안 함. cli/sdk path 모두 동일 필드
+    /// 사용 (cli path 는 항상 None).
+    pub window_rotated: Option<WindowRotatedInfo>,
+}
+
+/// (claudeSdkSessionWindowGuardPlan Task 02) fresh-rotate 발생 metadata.
+///
+/// SSOT: `docs/plans/claudeSdkSessionWindowGuardPlan_2026-05-09.md` Task 02.
+/// frontend toast 의 description 에 사용 (디버깅 / 사용자 인지 정보).
+#[derive(Debug, Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct WindowRotatedInfo {
+    /// rotate 직전 누적 input_tokens
+    pub prior_tokens: u64,
+    /// 적용된 임계값 (180K default / 900K `[1m]`)
+    pub threshold: u64,
 }
 
 /// claude API 에러를 사용자 친화 카테고리로 분류 (T7).
@@ -278,6 +298,12 @@ fn looks_like_stale_resume_error(error_msg: &str) -> bool {
     lower.contains("out of extra usage")
         || (lower.contains("session not found") || (lower.contains("404") && lower.contains("session")))
         || (lower.contains("invalid_request_error") && lower.contains("session"))
+        // v0.1.8-beta-3 hotfix — `--resume` 사용 시 Anthropic 서버의 session history
+        // 누적이 200K (sonnet-4-6 default) 한계 초과하면 *"Prompt is too long"* 응답.
+        // outgoing 자체는 짧아도 (예: 5K tokens) server-side 누적 hit. fresh session
+        // retry 시 Anthropic 서버가 history 무관하게 outgoing 만 받아 정상 응답.
+        // false positive 시 retry 도 동일 fail → raw error 반환 (line 344, 무한 loop 차단).
+        || lower.contains("prompt is too long")
 }
 
 /// Execute `claude -p` with `--output-format stream-json`.
@@ -598,6 +624,8 @@ where
                     last_rate_limit: last_rate_limit.take(),
                     // T2: stream_run wrapper 가 retry 후 true 로 set. 1회 시도 자체는 false.
                     fresh_fallback: false,
+                    // cli `-p` path 는 본 plan scope 외 (sdk-url path 만 cumulative window guard 적용)
+                    window_rotated: None,
                 });
             }
             _ => {}
@@ -713,6 +741,8 @@ pub fn run(input: RunInput) -> Result<RunOutput, AppError> {
         // 못한다 (stream-json 전용). 항상 None.
         last_rate_limit: None,
         fresh_fallback: false,
+        // cli `-p` path 는 본 plan scope 외 (sdk-url path 만 cumulative window guard 적용)
+        window_rotated: None,
     })
 }
 
@@ -871,6 +901,20 @@ mod tests {
     #[test]
     fn looks_like_stale_resume_matches_invalid_session_request() {
         assert!(looks_like_stale_resume_error("invalid_request_error: invalid session id"));
+    }
+
+    /// v0.1.8-beta-3 hotfix — `--resume` 사용 시 server-side session history
+    /// 누적이 200K (sonnet-4-6 default) 한계 초과 → *"Prompt is too long"*.
+    /// fresh session retry 로 server-side 누적 무시 + outgoing 만 발송 → 정상 응답.
+    #[test]
+    fn looks_like_stale_resume_matches_prompt_too_long() {
+        // Anthropic API 응답 본문 — claude-code CLI 가 normalize
+        assert!(looks_like_stale_resume_error("Prompt is too long"));
+        assert!(looks_like_stale_resume_error("prompt is too long"));
+        // case insensitive 보존
+        assert!(looks_like_stale_resume_error("PROMPT IS TOO LONG"));
+        // 더 자세한 형태 (token 수 명시) 도 매칭
+        assert!(looks_like_stale_resume_error("prompt is too long: 215000 tokens > 200000 maximum"));
     }
 
     #[test]

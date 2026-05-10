@@ -1,7 +1,7 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
   "productName": "tunaFlow",
-  "version": "0.1.5-beta",
+  "version": "0.1.8-beta-3",
   "identifier": "com.tunaflow.app",
   "build": {
     "frontendDist": "../dist",
@@ -19,12 +19,11 @@
         "minHeight": 480,
         "visible": false,
         "theme": "Dark",
-        "titleBarStyle": "Overlay",
-        "hiddenTitle": true
+        "decorations": true
       }
     ],
     "security": {
-      "csp": "default-src 'self'; script-src 'self' 'unsafe-eval' 'wasm-unsafe-eval'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob: https://avatars.githubusercontent.com https://github.com; font-src 'self' data:; connect-src 'self' https://cdn.dos.zone https://dos.zone; worker-src 'self' blob:"
+      "csp": "default-src 'self'; script-src 'self' 'unsafe-eval' 'wasm-unsafe-eval'; style-src 'self' 'unsafe-inline' https://cdn.jsdelivr.net/gh/orioncactus/pretendard@v1.3.9/; img-src 'self' data: blob: https://avatars.githubusercontent.com https://github.com; font-src 'self' data: https://cdn.jsdelivr.net/gh/orioncactus/pretendard@v1.3.9/; connect-src 'self' ipc: http://ipc.localhost https://cdn.dos.zone https://dos.zone; worker-src 'self' blob:"
     }
   },
   "bundle": {

@@ -1,6 +1,6 @@
 [package]
 name = "tuna-flow"
-version = "0.1.5-beta"
+version = "0.1.8-beta-3"
 edition = "2021"
 description = "Multi-agent orchestration desktop client for CLI coding agents (Claude Code, Codex, Gemini, OpenCode)"
 license = "Apache-2.0"
@@ -25,7 +25,7 @@ path = "src/bin/eval_retrieval.rs"
 tauri-build = { version = "2", features = [] }
 
 [dependencies]
-tauri = { version = "2", features = [] }
+tauri = { version = "2", features = ["devtools"] }
 tauri-plugin-dialog = "2"
 tauri-plugin-notification = "2"
 tauri-plugin-store = "2"

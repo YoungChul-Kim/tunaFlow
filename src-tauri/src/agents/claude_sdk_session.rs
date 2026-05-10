@@ -128,6 +128,14 @@ impl Drop for SdkSession {
 type SessionRegistry = Arc<PlMutex<HashMap<String, Arc<SdkSession>>>>;
 /// conversation_id → 마지막 result session_id (세션 종료 후에도 --resume용으로 보존)
 type ResumeRegistry = Arc<PlMutex<HashMap<String, String>>>;
+/// (claudeSdkSessionWindowGuardPlan_2026-05-09) session_key → 마지막 result 의
+/// `accumulated_input_tokens` (cumulative SDK history 누적치). stream_run_sdk
+/// 의 result handler 가 turn 종료 시 stash, 다음 dispatch 진입 시 read 해서
+/// 임계 (130K default / 900K `[1m]`) 도달 여부 검사 → fresh-rotate.
+///
+/// in-memory stash — 앱 재시작 시 reset (DB persist 영역은 별 P3 plan, Plan §6
+/// 후속 plan 가능성).
+type WindowGuardRegistry = Arc<PlMutex<HashMap<String, u64>>>;
 /// `branch:<branch_id>` shadow conv → root main conversation_id 캐시.
 ///
 /// **의도** (`docs/plans/branchInheritsMainSessionPlan_2026-04-25.md`):
@@ -144,6 +152,63 @@ lazy_static::lazy_static! {
     static ref SESSIONS: SessionRegistry = Arc::new(PlMutex::new(HashMap::new()));
     static ref RESUME_IDS: ResumeRegistry = Arc::new(PlMutex::new(HashMap::new()));
     static ref BRANCH_ROOT_CACHE: BranchRootCache = Arc::new(PlMutex::new(HashMap::new()));
+    /// claudeSdkSessionWindowGuardPlan Task 01 — session_key → 누적 input_tokens.
+    static ref WINDOW_GUARD_INPUT_TOKENS: WindowGuardRegistry = Arc::new(PlMutex::new(HashMap::new()));
+}
+
+/// (claudeSdkSessionWindowGuardPlan Task 01) 누적 input_tokens 를 stash.
+///
+/// `stream_run_sdk` 의 result event 핸들러 끝에서 호출. 다음 dispatch 진입 시
+/// `take_window_guard_input_tokens` 가 read → 임계 비교 → fresh-rotate 결정.
+///
+/// **INV-CSW-1** (Plan §1): `accumulated_input_tokens` tracking 본체 (line 902~)
+/// 변경 0 — 본 helper 는 *additive*, 단순 stash 만.
+fn stash_window_guard_input_tokens(session_key: &str, tokens: u64) {
+    WINDOW_GUARD_INPUT_TOKENS
+        .lock()
+        .insert(session_key.to_string(), tokens);
+}
+
+/// (claudeSdkSessionWindowGuardPlan Task 01) 누적 input_tokens stash 를 read.
+///
+/// `stream_run_sdk` 진입 직후 호출 → 본 값이 임계 도달이면 fresh-rotate.
+/// 미존재 (첫 send) 시 0 반환 — 자연스러운 정상 path 흐름.
+fn read_window_guard_input_tokens(session_key: &str) -> u64 {
+    WINDOW_GUARD_INPUT_TOKENS
+        .lock()
+        .get(session_key)
+        .copied()
+        .unwrap_or(0)
+}
+
+/// (claudeSdkSessionWindowGuardPlan Task 01) fresh-rotate 후 stash reset.
+///
+/// `kill_session_clear_resume` 직후 호출 → 새 세션의 첫 turn 부터 정상 누적
+/// 시작. INV-CSW-2 (fresh-rotate 후 ContextPack 재주입) 의 일부.
+fn clear_window_guard_input_tokens(session_key: &str) {
+    WINDOW_GUARD_INPUT_TOKENS.lock().remove(session_key);
+}
+
+/// (claudeSdkSessionWindowGuardPlan Task 01) fresh-rotate trigger 발동 결정.
+///
+/// 누적 input_tokens 가 model_id 별 임계 (Task 04 helper) 도달 시 true.
+/// stream_run_sdk 진입 path 에서 호출 → true 면 `kill_session_clear_resume`
+/// + `clear_window_guard_input_tokens` + (PR-2 에서) Tauri event emit.
+///
+/// fresh-rotate 자체는 *현재 turn* 에 적용 — `kill_session_clear_resume` 이
+/// SESSIONS / RESUME_IDS / LAST_DELIVERED 모두 invalidate 하므로 그 직후의
+/// `get_or_create_session` 이 fresh session 으로 spawn (INV-CSW-2).
+pub(crate) fn should_trigger_window_rotate(
+    session_key: &str,
+    model_id: Option<&str>,
+) -> bool {
+    let accumulated = read_window_guard_input_tokens(session_key);
+    if accumulated == 0 {
+        return false; // 첫 send 또는 초기화 직후 — fast path
+    }
+    let threshold =
+        crate::agents::claude_window_guard::current_window_guard_threshold(model_id);
+    accumulated >= threshold
 }
 
 /// brand:* conv_id 를 root main conversation_id 로 normalize.
@@ -352,7 +417,35 @@ fn kill_session_with_resume(conv_id: &str, keep_resume: bool) {
     if key != conv_id {
         crate::commands::agents_helpers::send_common::session_freshness::clear_delivered_key(&key);
     }
+    // (claudeSdkSessionWindowGuardPlan Task 01) window guard stash 도 정리 —
+    // 다음 send 가 fresh session 으로 시작하는데 prior 누적치가 stash 에 남아
+    // 있으면 false trigger 위험. brand/main 양쪽 키 모두 정리.
+    clear_window_guard_input_tokens(&key);
+    if key != conv_id {
+        clear_window_guard_input_tokens(conv_id);
+    }
     // SdkSession Drop → _shutdown_tx 전송 → axum 서버 종료 → _monitor_abort 취소
+}
+
+/// (claudeSdkSessionWindowGuardPlan Task 02 hook) fresh-rotate 발생 시
+/// frontend toast 알림 발행 — PR-1 단계는 stub (silent 동작).
+///
+/// 본 함수는 PR-2 (Task 02) 에서 Tauri event `tunaflow:sdk-session-window-rotated`
+/// 를 발행하도록 확장. PR-1 단독 머지 시에도 회귀 차단 (fresh-rotate trigger
+/// 자체) 은 즉시 발동, 단 사용자 가시성 (toast) 은 PR-2 머지 후 활성화.
+///
+/// 매개변수:
+/// - `conv_id`: rotate 발생 conversation
+/// - `prior_tokens`: rotate 직전 누적 input_tokens
+/// - `threshold`: 적용된 임계값 (130K default / 900K `[1m]`)
+///
+/// stub 단계 — eprintln 만 발행 → release log 에 기록되어 디버깅 용이.
+fn emit_window_rotated_event(conv_id: &str, prior_tokens: u64, threshold: u64) {
+    // PR-2 에서 AppHandle.emit("tunaflow:sdk-session-window-rotated", payload) 로 확장
+    eprintln!(
+        "[sdk-window-guard:event] tunaflow:sdk-session-window-rotated conv={} prior_tokens={} threshold={} (PR-2 toast hook stub)",
+        conv_id, prior_tokens, threshold
+    );
 }
 
 /// 해당 conversation에 활성 SDK 세션이 있는지 확인한다.
@@ -798,6 +891,47 @@ where
     G: FnMut(String) + Send,
     C: Fn() -> bool + Send,
 {
+    // (claudeSdkSessionWindowGuardPlan Task 01+02) SDK 누적 window guard.
+    //
+    // 직전 turn 의 result event 가 stash 한 누적 input_tokens 를 read 해서
+    // 임계 (default 130K / `[1m]` 900K) 도달이면 fresh-rotate 발동:
+    //   1. kill_session_clear_resume — SESSIONS + RESUME_IDS + LAST_DELIVERED 모두 invalidate
+    //   2. clear_window_guard_input_tokens — stash 도 reset
+    //   3. window_rotated_pending 에 metadata stash → result event 에서 RunOutput
+    //      에 옮김 → finalize_engine_run 이 Tauri event `tunaflow:sdk-session-window-rotated`
+    //      발행 → frontend toast 알림 (PR-2 Task 02)
+    //   4. 다음 줄의 get_or_create_session 이 fresh session 으로 spawn (INV-CSW-2)
+    //
+    // 회복 가시화: persistence.rs 가 LAST_DELIVERED 비어있음을 인지 →
+    // is_session_continuation=false → ContextPack full mode + anchor 2 turns
+    // → plan_doc / findings / RT consensus 재주입 (사용자 컨텍스트 회복).
+    let pre_dispatch_key = session_key_for(conv_id);
+    let mut window_rotated_pending: Option<crate::agents::claude::WindowRotatedInfo> = None;
+    if should_trigger_window_rotate(&pre_dispatch_key, input.model.as_deref()) {
+        let prior_tokens = read_window_guard_input_tokens(&pre_dispatch_key);
+        let threshold = crate::agents::claude_window_guard::current_window_guard_threshold(
+            input.model.as_deref(),
+        );
+        eprintln!(
+            "[sdk-window-guard] threshold reached: accumulated={} tokens >= {} (model={:?}) for conv={} key={} — \
+             rotating to fresh SDK session (clear SESSIONS+RESUME_IDS+LAST_DELIVERED)",
+            prior_tokens,
+            threshold,
+            input.model.as_deref().unwrap_or("<default>"),
+            conv_id,
+            pre_dispatch_key
+        );
+        kill_session_clear_resume(conv_id);
+        clear_window_guard_input_tokens(&pre_dispatch_key);
+        // (PR-2 Task 02) frontend toast 발행을 위한 metadata stash.
+        // result event 가 RunOutput.window_rotated 에 옮긴다.
+        window_rotated_pending = Some(crate::agents::claude::WindowRotatedInfo {
+            prior_tokens,
+            threshold,
+        });
+        emit_window_rotated_event(conv_id, prior_tokens, threshold);
+    }
+
     // 세션 획득 (없으면 새로 생성, 모델 변경 시 재시작)
     let session = get_or_create_session(
         conv_id,
@@ -1011,6 +1145,14 @@ where
                     parsed.total_input_tokens.unwrap_or(0),
                     parsed.total_output_tokens.unwrap_or(0));
 
+                // (claudeSdkSessionWindowGuardPlan Task 01) cumulative input_tokens stash.
+                // 다음 dispatch 진입 시 stream_run_sdk 진입부 가드가 read → 임계
+                // 비교 → fresh-rotate 결정. INV-CSW-1: tracking 본체 변경 0,
+                // 단순 stash 만 추가.
+                if final_input > 0 {
+                    stash_window_guard_input_tokens(&session_key_owned, final_input as u64);
+                }
+
                 return Ok(RunOutput {
                     content: parsed.result.unwrap_or_default(),
                     cost_usd: parsed.total_cost_usd.or(parsed.cost_usd).unwrap_or(0.0),
@@ -1020,6 +1162,9 @@ where
                     // sdk-session path 는 본 plan scope 외 — 호환성만 유지.
                     last_rate_limit: None,
                     fresh_fallback: false,
+                    // (claudeSdkSessionWindowGuardPlan Task 02) 진입부 fresh-rotate
+                    // 발생 시 metadata 를 옮김. None 이면 정상 path (rotate 미발생).
+                    window_rotated: window_rotated_pending.take(),
                 });
             }
             "control_request" => {
@@ -1053,6 +1198,8 @@ pub fn shutdown_all_sessions() {
     }
     drop(sessions); // Drop triggers _monitor_abort → kill_on_drop
     RESUME_IDS.lock().clear();
+    // (claudeSdkSessionWindowGuardPlan Task 01) window guard stash 전체 reset.
+    WINDOW_GUARD_INPUT_TOKENS.lock().clear();
 }
 
 /// Kill any orphaned `claude --sdk-url` processes from previous app runs.
@@ -1586,5 +1733,220 @@ mod tests {
         // cleanup
         RESUME_IDS.lock().remove(&root);
         clear_branch_cache(&brand_conv);
+    }
+
+    // ─── claudeSdkSessionWindowGuardPlan Task 01 ───────────────────────────
+
+    /// 신규 stash/read/clear API 단위 검증 — 다른 테스트 격리를 위해 unique conv 사용.
+    #[test]
+    fn window_guard_stash_round_trip_persists_and_clears() {
+        let conv = unique_conv("wg-stash-roundtrip");
+        let key = session_key_for(&conv);
+
+        // 초기 stash 없음 → 0 반환 (fast path).
+        assert_eq!(read_window_guard_input_tokens(&key), 0);
+
+        stash_window_guard_input_tokens(&key, 175_000);
+        assert_eq!(read_window_guard_input_tokens(&key), 175_000);
+
+        clear_window_guard_input_tokens(&key);
+        assert_eq!(read_window_guard_input_tokens(&key), 0);
+    }
+
+    #[test]
+    fn sdk_window_guard_no_op_below_threshold() {
+        // accumulated < 임계 → fresh-rotate 미발동 (정상 path 보존).
+        // INV-CSW (G1): 정상 사용량 사용자 영향 0.
+        let conv = unique_conv("wg-below-default");
+        let key = session_key_for(&conv);
+
+        clear_window_guard_input_tokens(&key);
+        // 임계 직전 (129K, default 130K cap — v0.1.8-beta-2 hotfix)
+        stash_window_guard_input_tokens(&key, 129_000);
+
+        assert!(
+            !should_trigger_window_rotate(&key, Some("claude-opus-4-7")),
+            "default 모델, 129K < 130K → rotate trigger 안 됨"
+        );
+
+        clear_window_guard_input_tokens(&key);
+    }
+
+    #[test]
+    fn sdk_window_guard_triggers_fresh_rotate_at_threshold() {
+        // accumulated >= 임계 → fresh-rotate 발동 (사용자 보고 fix 의도).
+        // INV-CSW (G1): "Prompt is too long" 회귀 차단의 핵심 분기.
+        let conv = unique_conv("wg-at-default");
+        let key = session_key_for(&conv);
+
+        clear_window_guard_input_tokens(&key);
+        // 임계 도달 (130K = default cap, v0.1.8-beta-2 hotfix)
+        stash_window_guard_input_tokens(&key, 130_000);
+
+        assert!(
+            should_trigger_window_rotate(&key, Some("claude-opus-4-7")),
+            "default 모델, 130K >= 130K → rotate trigger 발동"
+        );
+
+        // 초과 (200K) 도 동일하게 trigger
+        stash_window_guard_input_tokens(&key, 200_000);
+        assert!(should_trigger_window_rotate(&key, Some("claude-sonnet-4-6")));
+
+        clear_window_guard_input_tokens(&key);
+    }
+
+    #[test]
+    fn sdk_window_guard_resets_after_kill_session_clear_resume() {
+        // INV-CSW-2: fresh-rotate 후 stash reset 되어 새 session 의 첫 turn 부터
+        // 정상 누적. kill_session_clear_resume 가 stash 도 정리하는지 확인.
+        let conv = unique_conv("wg-reset-after-kill");
+        let key = session_key_for(&conv);
+
+        // RESUME_IDS / stash 초기화
+        RESUME_IDS.lock().insert(key.clone(), "sid-OLD".into());
+        stash_window_guard_input_tokens(&key, 185_000);
+        assert_eq!(read_window_guard_input_tokens(&key), 185_000);
+
+        // kill_session_clear_resume — stash 도 함께 reset 되어야 함 (INV-CSW-2)
+        kill_session_clear_resume(&conv);
+        assert_eq!(
+            read_window_guard_input_tokens(&key),
+            0,
+            "kill_session_clear_resume 후 window guard stash 가 reset 되어야 함"
+        );
+    }
+
+    #[test]
+    fn sdk_window_guard_1m_variant_threshold_900k_not_triggered_at_180k() {
+        // INV-CSW-5: `[1m]` variant 사용자 (claude-opus-4-7-1m 등) 영향 0 — 200K
+        // limit 무관. 임계 900K 적용 → 200K 누적도 trigger 안 됨.
+        let conv = unique_conv("wg-1m-not-trigger");
+        let key = session_key_for(&conv);
+
+        clear_window_guard_input_tokens(&key);
+        // default 모델이면 trigger 됐을 양 (200K)
+        stash_window_guard_input_tokens(&key, 200_000);
+
+        assert!(
+            !should_trigger_window_rotate(&key, Some("claude-opus-4-7-1m")),
+            "1M variant: 200K < 900K → rotate 미발동 (INV-CSW-5)"
+        );
+        assert!(
+            !should_trigger_window_rotate(&key, Some("claude-haiku-4-5-1m")),
+            "1M variant 다른 family 도 동일"
+        );
+
+        clear_window_guard_input_tokens(&key);
+    }
+
+    #[test]
+    fn sdk_window_guard_1m_variant_triggers_at_900k() {
+        // 1M variant 도 임계 도달 시 (900K) trigger.
+        let conv = unique_conv("wg-1m-at-trigger");
+        let key = session_key_for(&conv);
+
+        clear_window_guard_input_tokens(&key);
+        stash_window_guard_input_tokens(&key, 900_000);
+
+        assert!(
+            should_trigger_window_rotate(&key, Some("claude-opus-4-7-1m")),
+            "1M variant: 900K >= 900K → rotate 발동"
+        );
+
+        clear_window_guard_input_tokens(&key);
+    }
+
+    #[test]
+    fn sdk_window_guard_no_op_with_zero_accumulated() {
+        // 첫 send (stash 비어있음) — fast path, threshold 비교 자체 skip.
+        // INV-CSW-8: RT 미사용 / Reviewer 미사용 conv 의 fast path 보존.
+        let conv = unique_conv("wg-fresh-zero");
+        let key = session_key_for(&conv);
+
+        clear_window_guard_input_tokens(&key);
+
+        assert!(
+            !should_trigger_window_rotate(&key, Some("claude-opus-4-7")),
+            "stash 비어있으면 trigger 안 됨"
+        );
+        assert!(
+            !should_trigger_window_rotate(&key, None),
+            "model_id 없어도 stash 비어있으면 trigger 안 됨"
+        );
+    }
+
+    /// (claudeSdkSessionWindowGuardPlan Task 05) 통합 e2e — fresh-rotate 발동
+    /// 시 모든 side effect (SESSIONS / RESUME_IDS / LAST_DELIVERED / window
+    /// guard stash) 가 일관되게 invalidate 되는지 검증.
+    ///
+    /// 시나리오: dev turn 누적 → Reviewer 호출 (stash 가 임계 초과) → trigger
+    /// → kill_session_clear_resume → 다음 dispatch 진입 시 stash 0 + LAST_DELIVERED
+    /// 비어있음 → ContextPack full mode (INV-CSW-2) 자연 회복.
+    #[test]
+    fn sdk_window_guard_full_rotate_flow_invalidates_all_state() {
+        use crate::commands::agents_helpers::send_common::session_freshness::{
+            last_delivered_key, record_delivered_key,
+        };
+
+        let conv = unique_conv("wg-rotate-full-flow");
+        let key = session_key_for(&conv);
+
+        // 사전 상태: dev turn 누적 + 정상 SDK 세션 동작 중 imitating
+        RESUME_IDS.lock().insert(key.clone(), "sid-DEV-ACCUMULATED".into());
+        record_delivered_key(&conv, "claude-ws:sid-DEV-ACCUMULATED");
+        stash_window_guard_input_tokens(&key, 185_000);
+
+        // 사전 상태 검증
+        assert_eq!(read_window_guard_input_tokens(&key), 185_000);
+        assert!(RESUME_IDS.lock().contains_key(&key));
+        assert!(last_delivered_key(&conv).is_some());
+        assert!(should_trigger_window_rotate(&key, Some("claude-opus-4-7")));
+
+        // Reviewer 호출 시뮬레이션 — stream_run_sdk 진입부 trigger 발동 시 호출되는
+        // 두 cleanup 함수 (kill_session_clear_resume 가 둘 다 invoke)
+        kill_session_clear_resume(&conv);
+
+        // 사후 상태 검증 (INV-CSW-2 + INV-CSW-1 의 reset 영역)
+        assert_eq!(
+            read_window_guard_input_tokens(&key),
+            0,
+            "fresh-rotate 후 window guard stash 0 — 다음 send 가 정상 누적 시작"
+        );
+        assert!(
+            !RESUME_IDS.lock().contains_key(&key),
+            "fresh-rotate 후 RESUME_IDS 비어있음 — 다음 send 가 fresh session 으로 spawn"
+        );
+        assert!(
+            last_delivered_key(&conv).is_none(),
+            "fresh-rotate 후 LAST_DELIVERED 비어있음 — is_session_continuation=false → ContextPack full mode 자연 회복"
+        );
+        assert!(
+            !should_trigger_window_rotate(&key, Some("claude-opus-4-7")),
+            "fresh-rotate 후 trigger 자체 미발동 (stash 0 fast path)"
+        );
+    }
+
+    /// (claudeSdkSessionWindowGuardPlan Task 05) 시나리오: `[1m]` variant 사용
+    /// 자가 같은 dev turn 누적량 (200K) 을 받아도 fresh-rotate 미발동 확인.
+    /// INV-CSW-5 핵심 가드.
+    #[test]
+    fn sdk_window_guard_1m_variant_skips_rotate_in_full_flow() {
+        let conv = unique_conv("wg-1m-no-rotate-flow");
+        let key = session_key_for(&conv);
+
+        clear_window_guard_input_tokens(&key);
+        // 200K 누적 — default 모드면 trigger 됐을 양
+        stash_window_guard_input_tokens(&key, 200_000);
+
+        // default 모델: trigger 발동
+        assert!(should_trigger_window_rotate(&key, Some("claude-opus-4-7")));
+
+        // 1M variant: trigger 미발동 (INV-CSW-5)
+        assert!(
+            !should_trigger_window_rotate(&key, Some("claude-opus-4-7-1m")),
+            "1M variant 사용자는 200K 에서 미발동 (cap 900K)"
+        );
+
+        clear_window_guard_input_tokens(&key);
     }
 }

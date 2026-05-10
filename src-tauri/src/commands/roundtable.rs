@@ -13,7 +13,10 @@ use super::jobs;
 use super::roundtable_helpers::executor::{
     execute_round, RoundStrategy, RoundtableParticipant, SessionMap,
 };
-use super::roundtable_helpers::persist::{archive_transcript, persist_header, save_shared_brief};
+use super::roundtable_helpers::persist::{
+    archive_transcript, extract_consensus_items, load_consensus, persist_header_with_round,
+    save_consensus, save_shared_brief,
+};
 use super::agents_helpers::trace_log::{insert_trace_log, new_trace_id, new_span_id, SpanInfo};
 use super::agents_helpers::context_pack::build_rt_inheritance_section;
 use super::context_queries::project_path_for_conversation;
@@ -104,10 +107,14 @@ async fn run_synthesizer_after_round(
     };
 
     // Emit a header message to delimit the synthesizer output in the transcript.
+    // Synthesizer 는 round_num + 1 의 결과로 취급 — single dispatch 시 ContextPack
+    // 이 RT 메시지로 인지 가능 (devbug #263 Task 03).
     let header_content = format!("--- Synthesizer · {} reviewer verdicts ---", round_responses.len());
     let _ = {
         let conn = state.write.lock().ok()?;
-        super::roundtable_helpers::persist::persist_header(&conn, conversation_id, &header_content)
+        super::roundtable_helpers::persist::persist_header_with_round(
+            &conn, conversation_id, &header_content, Some(round_num + 1),
+        )
             .ok()
             .map(|h| {
                 let _ = app.emit("roundtable:progress", &h);
@@ -115,9 +122,45 @@ async fn run_synthesizer_after_round(
             })
     };
 
+    // Load any prior consensus reached in earlier rounds so the synthesizer
+    // doesn't try to re-litigate already-agreed axes (devbug #263 시나리오 B).
+    let prior_consensus = {
+        let conn = state.write.lock().ok()?;
+        load_consensus(&conn, conversation_id)
+    };
+    let prior_consensus_text = if prior_consensus.is_empty() {
+        String::new()
+    } else {
+        let lines: Vec<String> = prior_consensus
+            .iter()
+            .map(|(round, item)| {
+                let decision = if item.decision.len() > 600 {
+                    let safe = item
+                        .decision
+                        .char_indices()
+                        .map(|(i, _)| i)
+                        .take_while(|&i| i <= 597)
+                        .last()
+                        .unwrap_or(0);
+                    format!("{}...", &item.decision[..safe])
+                } else {
+                    item.decision.clone()
+                };
+                format!("- **{}** (R{}): {}", item.axis, round, decision)
+            })
+            .collect();
+        format!(
+            "\n\n## Consensus reached so far\n\n\
+             These axes are *already agreed* in prior rounds — do NOT re-litigate them.\n\
+             Build on top of these, or address only *new* axes:\n\n{}\n",
+            lines.join("\n")
+        )
+    };
+
     // Prepend a structured directive so the synthesizer knows *what* to produce.
     // The existing role_guidance (types.rs `synthesizer`) already requests
-    // consensus / contested / dissent sections — we add the vote-tally instruction.
+    // consensus / contested / dissent sections — we add the vote-tally instruction
+    // and ask for a machine-readable consensus marker (Plan §3 Task 02).
     let directive = format!(
         "## Synthesizer Task\n\
          The {} reviewer verdicts above are the input. Do NOT overwrite them.\n\
@@ -128,8 +171,21 @@ async fn run_synthesizer_after_round(
          4. **Dissent** — any minority position worth preserving.\n\
          5. **Final recommendation** — one of: accept / revise / reject. Justify briefly.\n\n\
          If the tally is split (e.g. 2 pass / 1 fail), do not rubber-stamp the majority —\n\
-         state the reasoning for your final recommendation.",
-        round_responses.len()
+         state the reasoning for your final recommendation.\n\n\
+         ### Machine-readable consensus marker\n\n\
+         At the END of your response, append the following block exactly so the\n\
+         system can persist agreed axes across rounds:\n\n\
+         ```\n\
+         <!-- tunaflow:consensus -->\n\
+         [\n  \
+           {{\"axis\":\"<short keyword>\",\"decision\":\"<1-3 sentence agreed outcome>\",\"participants\":[\"<name>\",...],\"confidence\":<0.0-1.0>}}\n\
+         ]\n\
+         <!-- /tunaflow:consensus -->\n\
+         ```\n\n\
+         Output an EMPTY array `[]` if no axis reached consensus this round.\n\
+         Use ONLY ASCII straight quotes inside the JSON, valid JSON syntax.{}",
+        round_responses.len(),
+        prior_consensus_text,
     );
     let synth_topic = format!("{}\n\n---\n\n{}", topic, directive);
 
@@ -157,7 +213,24 @@ async fn run_synthesizer_after_round(
     let _ = prior_round_refs; // Reserved for future deliberative-mode integration.
 
     match result {
-        Ok((msgs, responses)) => Some((msgs, responses)),
+        Ok((msgs, responses)) => {
+            // Extract consensus items from the synthesizer's response and persist
+            // them so round N+1 can inject *"already agreed"* axes into prompts
+            // (devbug #263 시나리오 B 회복 path).
+            //
+            // INV-RTC-2 (synthesizer 본체 알고리즘 보존): 본 영역은 *추출 + 저장*
+            // 만 — voting / dissent 판단은 synthesizer 의 응답 본문 그대로 보존됨.
+            // Failure 는 silent (consensus persist 가 RT 본 흐름 깨면 안 됨).
+            for (_, content) in responses.iter() {
+                let items = extract_consensus_items(content);
+                if !items.is_empty() {
+                    if let Ok(conn) = state.write.lock() {
+                        save_consensus(&conn, conversation_id, round_num + 1, &items);
+                    }
+                }
+            }
+            Some((msgs, responses))
+        }
         Err(e) => {
             eprintln!("[rt-synth] synthesizer run failed: {e}");
             None
@@ -219,7 +292,7 @@ pub async fn roundtable_run(
         )?;
 
         let header = format!("--- Round 1 · {} · {} ---", mode_label, names);
-        let header_msg = persist_header(&conn, &input.conversation_id, &header)?;
+        let header_msg = persist_header_with_round(&conn, &input.conversation_id, &header, Some(1))?;
         let _ = app.emit("roundtable:progress", &header_msg);
         all_messages.push(header_msg);
     }
@@ -324,7 +397,7 @@ pub async fn roundtable_followup(
 
         round_num = next_round_number(&conn, &input.conversation_id);
         let header = format!("--- Round {} · {} · {} ---", round_num, mode_label, names);
-        let header_msg = persist_header(&conn, &input.conversation_id, &header)?;
+        let header_msg = persist_header_with_round(&conn, &input.conversation_id, &header, Some(round_num))?;
         let _ = app.emit("roundtable:progress", &header_msg);
         all_messages.push(header_msg);
     }
@@ -430,7 +503,7 @@ pub async fn start_roundtable_run(
         conn.execute("INSERT INTO messages (id, conversation_id, role, content, timestamp, status) VALUES (?1, ?2, 'user', ?3, ?4, 'done')", params![id, input.conversation_id, input.prompt, now])?;
 
         let header = format!("--- Round 1 · {} · {} ---", mode_label, names);
-        let header_msg = persist_header(&conn, &input.conversation_id, &header)?;
+        let header_msg = persist_header_with_round(&conn, &input.conversation_id, &header, Some(1))?;
         let _ = app.emit("roundtable:progress", &header_msg);
         (ep, pp, header_msg.id)
     };
@@ -545,7 +618,7 @@ pub async fn start_roundtable_followup(
 
         let rn = next_round_number(&conn, &input.conversation_id);
         let header = format!("--- Round {} · {} · {} ---", rn, mode_label, names);
-        let header_msg = persist_header(&conn, &input.conversation_id, &header)?;
+        let header_msg = persist_header_with_round(&conn, &input.conversation_id, &header, Some(rn))?;
         let _ = app.emit("roundtable:progress", &header_msg);
         (prior, rn, pp, header_msg.id)
     };

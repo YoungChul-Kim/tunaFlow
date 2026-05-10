@@ -155,11 +155,27 @@ pub fn assemble_prompt(
     // Weight policy (Structured Memory Source Strengthening):
     //   Structured task memory (plan/findings/artifacts) > Conversational memory (compressed) > Cross-session
     //   "현재 작업과 직접 연결된 구조화 객체"가 "대화 요약"보다 우선한다.
+    // (claudeSdkSessionWindowGuardPlan Task 03) Reviewer 분기 plan_doc cap
+    // squeeze. Reviewer 는 SDK 누적 history 폭발 surface 가 빈번한 role —
+    // plan_document max_chars 6000 → 3000 으로 좁혀 trigger threshold 늦춤.
+    // 다른 role (Architect / Developer / Persona / single-agent) 은 6000 보존
+    // (INV-CSW-6).
+    //
+    // min_chars 는 1000 그대로 — Reviewer 가 verdict 근거로 필요한 최소
+    // task spec/rubric 영역이 1000 안에 들어옴 (plan §3 Task 03 위험 항목 참고).
+    let plan_doc_max_chars = if data.sender_role.as_deref() == Some("reviewer") {
+        3000
+    } else {
+        6000
+    };
     let budget_alloc = guardrail::allocate_budgets(total_budget, &[
         // Structured task memory — highest priority
         guardrail::SectionBudget { name: "plan",       content_len: data.plan_section.as_ref().map_or(0, |s| s.len()),     weight: 1.5, min_chars: 500,  max_chars: guardrail::MAX_PLAN_SECTION },
-        guardrail::SectionBudget { name: "plan-doc",   content_len: data.plan_document.as_ref().map_or(0, |s| s.len()),    weight: 2.0, min_chars: 1000, max_chars: 6000 },
+        guardrail::SectionBudget { name: "plan-doc",   content_len: data.plan_document.as_ref().map_or(0, |s| s.len()),    weight: 2.0, min_chars: 1000, max_chars: plan_doc_max_chars },
         guardrail::SectionBudget { name: "findings",   content_len: data.findings_section.as_ref().map_or(0, |s| s.len()), weight: 1.2, min_chars: 500,  max_chars: guardrail::MAX_FINDINGS_SECTION },
+        // RT consensus 는 findings 와 동일 weight + min_chars (devbug #263 Task 04).
+        // 라운드별 1줄 axis 누적 → 일반적으로 짧음, MAX_FINDINGS_SECTION 안에서 충분.
+        guardrail::SectionBudget { name: "rt-consensus", content_len: data.rt_consensus_section.as_ref().map_or(0, |s| s.len()), weight: 1.2, min_chars: 500, max_chars: guardrail::MAX_FINDINGS_SECTION },
         guardrail::SectionBudget { name: "artifacts",  content_len: data.artifacts_section.as_ref().map_or(0, |s| s.len()),weight: 1.0, min_chars: 300,  max_chars: guardrail::MAX_ARTIFACTS_SECTION },
         // Supplementary sources
         guardrail::SectionBudget { name: "skills",     content_len: if data.active_skills.is_empty() { 0 } else { 2000 },  weight: 0.8, min_chars: 500,  max_chars: guardrail::MAX_SKILLS_SECTION },
@@ -482,6 +498,15 @@ pub fn assemble_prompt(
         ) {
             sections.push(s);
             included_sections.push("findings".into());
+        }
+        // RT consensus — Architect dispatch 가 누적 합의를 명시 인계받는 경로
+        // (devbug #263 Task 04). 빈 결과는 None → 섹션 자체 skip (INV-RTC-7/8).
+        if let Some(s) = guardrail::truncate_section(
+            data.rt_consensus_section.clone(),
+            dyn_cap("rt-consensus"),
+        ) {
+            sections.push(s);
+            included_sections.push("rt-consensus".into());
         }
         if let Some(s) = guardrail::truncate_section(
             data.artifacts_section.clone(),
@@ -826,6 +851,7 @@ mod tests {
             plan_document: None,
             findings_section: None,
             artifacts_section: None,
+            rt_consensus_section: None,
             retrieval_chunks: vec![],
             document_chunks: vec![],
             compressed_memory: None,
@@ -1131,5 +1157,164 @@ mod tests {
             "engine 만 있는 케이스에도 sender 줄 출력: {}", assembled
         );
         assert!(!assembled.contains("persona="));
+    }
+
+    // ─── RT consensus integration (devbug #263 Task 04+05) ─────────────────
+
+    /// Architect dispatch path 의 통합 검증: ContextData.rt_consensus_section
+    /// 이 채워져 있으면 prompt 본문에 *"## Roundtable Consensus"* 섹션 등장 +
+    /// `meta.sections` 에 `rt-consensus` 라벨 등장. 시나리오 C 회복 e2e 가드.
+    #[test]
+    fn rt_consensus_section_assembled_into_prompt_and_meta() {
+        let tmp = TempDir::new().unwrap();
+        let mut data = empty_context_data(Some(tmp.path().to_string_lossy().to_string()));
+        data.rt_consensus_section = Some(
+            "## Roundtable Consensus\n\n\
+             These axes are *already agreed* in roundtable rounds — Architect / single\n\
+             agent dispatch builds on top of these without re-litigating.\n\n\
+             - **R1** **compression** _(by claude, codex)_: Lite/Standard/Full automode\n\
+             - **R2** **budget** _(by gemini)_: dynamic per-section budget"
+                .into(),
+        );
+        data.context_mode_override = Some("standard".into());
+
+        let (assembled, _sys, meta) = assemble_prompt(&data, None);
+
+        assert!(
+            meta.sections.contains(&"rt-consensus".to_string()),
+            "meta.sections 에 rt-consensus 라벨 등장해야: {:?}", meta.sections,
+        );
+        assert!(
+            assembled.contains("## Roundtable Consensus"),
+            "prompt 본문에 RT 합의 섹션 헤딩 등장: {}", assembled,
+        );
+        assert!(
+            assembled.contains("**R1** **compression**"),
+            "라운드별 axis 누적 list 등장",
+        );
+        assert!(
+            assembled.contains("**R2** **budget**"),
+            "라운드 2 합의도 그대로 인계",
+        );
+        assert!(
+            assembled.contains("Lite/Standard/Full automode"),
+            "decision 본문 truncate 안 됨 (짧은 결정)",
+        );
+    }
+
+    /// rt_consensus_section None → meta 에 rt-consensus 부재 (INV-RTC-7/8 fast
+    /// path). RT 미사용 / 첫 라운드 영향 0.
+    #[test]
+    fn empty_rt_consensus_skips_section() {
+        let tmp = TempDir::new().unwrap();
+        let mut data = empty_context_data(Some(tmp.path().to_string_lossy().to_string()));
+        data.rt_consensus_section = None;
+        data.context_mode_override = Some("standard".into());
+
+        let (assembled, _sys, meta) = assemble_prompt(&data, None);
+        assert!(
+            !meta.sections.contains(&"rt-consensus".to_string()),
+            "rt-consensus 섹션 미등장 — RT 미사용 fast path",
+        );
+        assert!(
+            !assembled.contains("Roundtable Consensus"),
+            "prompt 본문에도 RT 합의 섹션 부재",
+        );
+    }
+
+    // ─── claudeSdkSessionWindowGuardPlan Task 03 — Reviewer squeeze ────────
+
+    /// plan_doc 가 아주 길 때, Reviewer role 분기는 max_chars 3000 적용,
+    /// 다른 role 은 6000 적용. `## Plan Document\n\n` 헤더 뒤 본문 길이로
+    /// 정확히 측정.
+    ///
+    /// 핵심 단순화: total_budget = 60K (default), 다른 섹션 content_len = 0
+    /// 으로 plan-doc 만 충분히 큼 → max_chars 가 dominant cap 으로 작동.
+    fn measure_plan_doc_body_len(assembled: &str) -> usize {
+        let header = "## Plan Document\n\n";
+        let Some(start) = assembled.find(header) else { return 0; };
+        let body_start = start + header.len();
+        // truncate 시 "[... truncated]" marker 가 끝에 붙음. body 길이 = marker 직전까지
+        let after = &assembled[body_start..];
+        let body_end = after.find("\n\n[... truncated]")
+            .unwrap_or_else(|| {
+                // truncate 안 됐으면 next ## 헤더 또는 끝까지
+                after.find("\n## ").unwrap_or(after.len())
+            });
+        body_end
+    }
+
+    #[test]
+    fn reviewer_role_uses_squeezed_plan_doc_cap() {
+        let tmp = TempDir::new().unwrap();
+        let mut data = empty_context_data(Some(tmp.path().to_string_lossy().to_string()));
+        // Reviewer 가 받는 plan_document — 10K (실제 회귀 시나리오 매칭).
+        // unique marker (앞 100자 = "REV-PLANDOC-") 는 다른 영역과 충돌 차단.
+        data.plan_document = Some(format!("REVPLAN{}", "x".repeat(9_993)));
+        data.context_mode_override = Some("standard".into());
+        data.sender_role = Some("reviewer".into());
+
+        let (assembled, _, meta) = assemble_prompt(&data, None);
+        assert!(
+            meta.sections.contains(&"plan-document".to_string()),
+            "plan-document 섹션 등장"
+        );
+
+        let body_len = measure_plan_doc_body_len(&assembled);
+        assert!(
+            body_len <= 3050, // 3000 cap + char_boundary 보정 여유
+            "reviewer 의 plan_doc body 는 3K 이하로 squeeze (got {})",
+            body_len
+        );
+    }
+
+    /// 다른 role (Architect / Developer / Persona / single-agent) 은 기존
+    /// max_chars 6000 보존. INV-CSW-6 의 회귀 가드.
+    #[test]
+    fn non_reviewer_roles_keep_original_plan_doc_cap() {
+        // Architect
+        let tmp = TempDir::new().unwrap();
+        let mut data = empty_context_data(Some(tmp.path().to_string_lossy().to_string()));
+        data.plan_document = Some(format!("ARCH{}", "y".repeat(9_996)));
+        data.context_mode_override = Some("standard".into());
+        data.sender_role = Some("architect".into());
+        let (assembled, _, _) = assemble_prompt(&data, None);
+        let body_len = measure_plan_doc_body_len(&assembled);
+        assert!(
+            body_len > 3050,
+            "architect 분기는 3K squeeze 적용 안 됨 (got {} body chars)",
+            body_len
+        );
+        assert!(
+            body_len <= 6050, // 6000 cap + 보정 여유
+            "architect 분기는 6K cap 보존 (got {})",
+            body_len
+        );
+
+        // Developer (별 sender_role)
+        let mut data = empty_context_data(Some(tmp.path().to_string_lossy().to_string()));
+        data.plan_document = Some(format!("DEV{}", "z".repeat(9_997)));
+        data.context_mode_override = Some("standard".into());
+        data.sender_role = Some("developer".into());
+        let (assembled, _, _) = assemble_prompt(&data, None);
+        let body_len = measure_plan_doc_body_len(&assembled);
+        assert!(
+            body_len > 3050,
+            "developer 분기도 3K squeeze 적용 안 됨 (got {})",
+            body_len
+        );
+
+        // sender_role None (single-agent dispatch 등)
+        let mut data = empty_context_data(Some(tmp.path().to_string_lossy().to_string()));
+        data.plan_document = Some(format!("NONE{}", "w".repeat(9_996)));
+        data.context_mode_override = Some("standard".into());
+        data.sender_role = None;
+        let (assembled, _, _) = assemble_prompt(&data, None);
+        let body_len = measure_plan_doc_body_len(&assembled);
+        assert!(
+            body_len > 3050,
+            "sender_role None 분기도 3K squeeze 적용 안 됨 (got {})",
+            body_len
+        );
     }
 }

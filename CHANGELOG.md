@@ -4,6 +4,427 @@ All notable changes to tunaFlow are recorded here.
 Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/);
 versioning follows [SemVer](https://semver.org/spec/v2.0.0.html).
 
+## [0.1.8-beta-3] - 2026-05-09
+
+🩹 **CLI `--resume` path 의 *"Prompt is too long"* 자동 fresh retry hotfix** —
+v0.1.8-beta / v0.1.8-beta-2 의 fresh-rotate 정책이 **sdk-url path 만** cover
+하고 cli `-p --resume` path 는 *의도적으로 제외* 됐던 결함. claudeTransportFlipHardeningPlan
+T9 (2026-04-29) 으로 cli `--resume` path 가 **default** 라 사용자 본인 환경의
+*기본 path* 가 fix 사각지대. dev 서버 stdout 의 실측 fact:
+
+```
+[guardrail] engine=claude-resume model=claude-sonnet-4-6 status=err
+duration=16000ms prompt_chars=22291 est_tokens=5572
+```
+
+→ outgoing 5.5K tokens (200K 한계의 2.8%) 인데도 *"Prompt is too long"* —
+즉 root cause 는 *outgoing 길이* 아닌 *Anthropic 서버의 session_id 누적
+history 200K 초과*. `--resume` 사용 시 server-side history 자동 첨부.
+
+### Fixed
+
+- **`looks_like_stale_resume_error` predicate 에 `"prompt is too long"` 패턴
+  추가** (`claude.rs:283`) — 기존 3 패턴 (out of extra usage / session not
+  found / invalid_request_error+session) 외 신규 1 패턴. detect 시 기존
+  T2 fresh-rotate 인프라 (`stream_run` wrapper, line 322~346) 가 자동
+  적용 → resume_token 제거 후 fresh session retry → server-side 누적 무시
+  + outgoing 만 발송 → 정상 응답. retry 도 동일 fail 시 raw error 반환
+  (line 344, 무한 loop 차단).
+
+### Notes
+
+- v0.1.8-beta (sdk-url path fresh-rotate) + v0.1.8-beta-2 (임계 130K
+  보수화) 모두 그대로 유지. 본 hotfix 는 *cli path 영역만* 신규 추가.
+- false positive 위험 0 — *진짜 outgoing 길이 초과* 면 fresh retry 도
+  동일 fail → raw error 반환. 무한 loop 차단됨.
+- Test baseline: **Rust 651 → 652** (+1 신규 `looks_like_stale_resume_matches_prompt_too_long`
+  unit test, 4 case 검증).
+- 후속 plan 후보: server-side session window 동적 보정 (Anthropic 응답의
+  `usage.input_tokens` 받아 tunaFlow accumulated 와 sync) — `[1m]` variant
+  detection 과 같은 영역으로 정확도 ↑.
+
+## [0.1.8-beta-2] - 2026-05-09
+
+🩹 **SDK window guard 임계 130K 보수화 hotfix** — v0.1.8-beta 의 fresh-rotate
+정책이 dev 환경에서도 *"Prompt is too long"* 회귀 잔존. 임계 180K (200K 의
+90%) 가 next-turn input 안전마진을 underweight 한 결과 + 한국어 (CJK) 본문은
+char 당 token 비율 2~3배라 더 빨리 한계 도달. 임계 180K → 130K (200K 의
+65%) 보수화 + 70K tokens 추가 안전마진 확보.
+
+### Fixed
+
+- **`SDK_WINDOW_GUARD_TOKENS_DEFAULT` 130_000** (`claude_window_guard.rs:22`)
+  — 이전 90% 임계 (180K) 가 next-turn input 평균 30~50K tokens 를 underweight,
+  CJK 본문 (한국어 1 char ≈ 2~3 tokens) 환경에서 turn N 종료 시 stash 가
+  150K 만 되어도 turn N+1 의 system + user + SDK history 합산이 200K 초과.
+  65% 임계 (130K) + 70K tokens 안전마진 으로 next-turn input 변동성 흡수.
+  `[1m]` variant 영역은 영향 0 (900K 그대로). default 사용자 fresh-rotate
+  빈도 약간 ↑ (UX 마찰 ↑) 이지만 회귀 0 우선.
+
+### Notes
+
+- v0.1.8-beta 의 4 PR fix (SDK 세션 누적 인지 + Reviewer squeeze + toast +
+  test) 그대로 유지. 본 hotfix 는 *임계값 1 라인* 보수화만.
+- 후속 plan 후보: next-turn input 평균 *동적 보정* (turn 평균 측정 + 합산
+  예측) — 임계 단일 상수 영역에서 turn 변동성 흡수 정책으로 확장.
+- Test baseline: **Rust 651 / Frontend 426** 그대로 (test 영역 임계값
+  179_000 → 129_000, 180_000 → 130_000 일관 갱신).
+
+## [0.1.8-beta] - 2026-05-09
+
+🩹 **Reviewer 단계 *"Prompt is too long"* 회귀 자동 회복** —
+v0.1.7-beta release 후 사용자 본인 환경에서 표면화된 SDK 세션 누적
+window 한계 회귀. `MAX_TOTAL_PROMPT = 60,000` chars 가 *system 영역
+outgoing* 만 가드하고 claude SDK 세션의 cumulative input_tokens (200K
+default / 1M `[1m]`) 는 별 영역. Reviewer 가 빈번한 surface 인 이유는
+같은 conv 의 dev turn 누적 + plan_document 6K + verdict 반복으로 SDK
+누적 input_tokens 가 200K limit hit. Architect plan + 4 PR 묶음 fix.
+
+### Fixed
+
+- **SDK 누적 임계 도달 시 자동 fresh-rotate** ([PR #279](https://github.com/hang-in/tunaFlow/pull/279)) —
+  default 모드 180K tokens / `[1m]` variant 모드 900K tokens 도달 시
+  `claude_sdk_session::stream_run_sdk` 진입 직후 자동 fresh session
+  rotate. SESSIONS / RESUME_IDS / LAST_DELIVERED 모두 invalidate →
+  `is_session_continuation=false` → ContextPack full mode + anchor 2
+  turns → plan_doc / findings / RT consensus 재주입 (사용자 컨텍스트
+  회복). claudeTransportFlipHardeningPlan T9-a/T11 의 fresh-session
+  정책 패턴 재사용.
+- **fresh-rotate 사용자 가시화 토스트** ([PR #280](https://github.com/hang-in/tunaFlow/pull/280)) —
+  Tauri event `tunaflow:sdk-session-window-rotated` + ClaudeFallbackEvents
+  listener 가 sonner toast info 5초 dismiss 표시. ko/en i18n 분기 +
+  conversation 별 sessionStorage spam 차단 flag. 신규 컴포넌트 0,
+  기존 sonner 인프라 재사용 (INV-CSW-7).
+- **Reviewer specific squeeze** ([PR #281](https://github.com/hang-in/tunaFlow/pull/281)) —
+  `load_recent_messages_excluding_rt` LIMIT 20 → 10 (reviewer 만) +
+  `plan_document` cap 6,000 → 3,000 chars (reviewer 만). 다른 role
+  (Architect / Developer / Persona / single-agent) 영향 0 (INV-CSW-6).
+  PR-1 의 fresh-rotate trigger threshold 늦춤 보조 → fresh-rotate 빈도
+  감소. squeeze 영역은 verdict 정확도에 영향 미미 (rubric / findings /
+  RT consensus 는 별 섹션).
+
+### Notes
+
+- **`[1m]` variant 사용자 영향 0** (INV-CSW-5) — claude-opus-4-7-1m 등
+  1M context variant 사용자는 임계 900K 적용. 200K limit 영역 무관 →
+  default 사용자보다 5배 늦은 시점에 fresh-rotate 발동 (또는 거의 발동
+  안 됨).
+- **release notes 강조 항목**:
+  - *"Reviewer 단계 'Prompt is too long' 회귀 자동 회복 — 세션 누적
+     한계 도달 시 자동 fresh-rotate + toast 알림"*
+  - *"`[1m]` variant 사용자 (1M context 모드) 영향 0"*
+  - *"Reviewer specific squeeze — plan_document + recent messages 영역
+     압축으로 trigger 빈도 감소"*
+- **DB migration 영향 0** — `accumulated_input_tokens` 는 in-memory stash
+  (앱 재시작 시 reset). 영구 저장 (재시작 후에도 정확한 cap 적용) 는 별
+  P3 plan 영역.
+- **사용자 자가 회복 path** — v0.1.8-beta 자산 재설치 + Reviewer 진입 시
+  *"Prompt is too long"* 회귀 0 / 임계 도달 시 toast 알림 표시 / 새 세션
+  의 첫 turn 부터 ContextPack 재주입 동작 확인.
+
+## [0.1.7-beta-6] - 2026-05-07
+
+🩹 **Win 10 22H2 WebView2 strict CSP path matching hotfix** —
+v0.1.7-beta-5 까지의 fix 가 architect 환경 (Win 11 23H2) 에선 정상 동작
+했으나 외부 사용자 (devbug, [#264](https://github.com/hang-in/tunaFlow/issues/264))
+의 Win 10 22H2 환경에서 stylesheet 차단 회귀. 환경 차이가 진단 어려웠던
+6번째 보고 후 해결.
+
+### Fixed
+
+- **CSP path 를 정확한 폰트 버전으로 명시** ([PR #276](https://github.com/hang-in/tunaFlow/pull/276)) —
+  `tauri.conf.json:26` 의 `style-src` / `font-src` path 를 `pretendard/`
+  (trailing slash) → `pretendard@v1.3.9/` (정확한 버전 path) 로 변경.
+  W3C CSP spec 상 `pretendard/` 도 stripped 후 prefix 매칭이라 통과
+  해야 했으나, **Win 10 22H2 의 구버전 WebView2 가 strict 매칭 구현** —
+  `pretendard/` 다음 char 가 정확히 `/` 이어야 매칭. URL 의 `@v1.3.9` 가
+  그 자리라 차단. `pretendard@v1.3.9/` 명시로 strict matching 통과 +
+  Gemini #276 review 의 *최소 권한 원칙* (orioncactus org 의 다른 repo
+  차단 유지) 충족.
+
+### Notes
+
+- **외부 사용자 회복 path (#264 Win 10)**: v0.1.7-beta-6 자산 재설치 후
+  pretendard 폰트 정상 로드 → 라벨/UI 깨짐 해소 예상. 폰트 외 다른 영역
+  영향 가능성도 있어 console 추가 캡처 + WebView2 version 진단 요청
+  댓글 게시.
+- **Trade-off**: 폰트 버전 업데이트 시 CSP 도 함께 갱신 필요. Gemini
+  review 권장 그대로 보안 강화 우선.
+- macOS / Linux 영향 0 — CSP 변경은 모든 OS 적용이지만 *기존 허용 영역
+  보존 + path 더 정확*.
+- Test baseline: **Rust 636 / Frontend 422** 그대로.
+
+## [0.1.7-beta-5] - 2026-05-07
+
+🩹 **Windows 1단 통합 UX 회복 + 모바일 페어링 LAN 노출 토글** —
+v0.1.7-beta-3/4 hotfix 사이클 (capabilities + CSP IPC) 후 production 빌드의
+`WindowControls` click 동작이 확정되었으므로 `set_decorations(false)` 를
+다시 호출해 PR #237 의 mac parity *"1 라인 통합"* UX 회복. Gemini code
+review (PR #269 #2) 가 지적한 native + custom 중복 (architect sh02 검증의
+*"3단 헤더"*) 동시 해소. 외부 사용자 (devbug, [#270](https://github.com/hang-in/tunaFlow/issues/270))
+보고의 모바일 페어링 LAN 노출 토글도 묶어서 처리 — default OFF 로 공공
+Wi-Fi / 사내 IDS 환경의 attack surface 차단.
+
+### Fixed
+
+- **Windows 1단 통합 UX 회복** ([PR #274](https://github.com/hang-in/tunaFlow/pull/274), issue [#264](https://github.com/hang-in/tunaFlow/issues/264) 의 final cycle) —
+  `bootstrap/window.rs` 의 cfg(target_os = "windows") 안에 `set_decorations(false)`
+  호출 다시 추가. capabilities/CSP/drag-region 격리 모두 fix 된 상태에서
+  안전. mac parity *"1 라인 통합"* (custom TitleBar + WindowControls) UX
+  회복. mac/Linux 영향 0.
+
+### Added
+
+- **모바일 페어링 LAN 노출 토글** ([PR #275](https://github.com/hang-in/tunaFlow/pull/275), issue [#270](https://github.com/hang-in/tunaFlow/issues/270)) —
+  HTTP API 가 `0.0.0.0:19840` 으로 무조건 바인드되던 회귀를 *기본값 OFF*
+  (`127.0.0.1:19840`) 로 전환. Settings → Runtime → 모바일 페어링 토글로
+  사용자가 능동 ON 가능. 기존 페어링 사용자에겐 첫 startup 1회 toast 안내
+  (*"Settings → Runtime 에서 다시 켤 수 있습니다"*). 토글 변경은 다음
+  startup 부터 적용 (hot-rebind 별 PR 영역).
+
+### Notes
+
+- **외부 사용자 회복 path (#264)**: 이번 1단 통합 회복으로 *"3단 헤더 이상해
+  보임"* (architect sh02 검증) UX 정리. devbug 환경 새 자산 재설치 후
+  최종 회복 확인 부탁드립니다. capabilities/CSP fix 모두 그대로 유지되므로
+  click 동작 보장.
+- **모바일 페어링 default OFF 결정 사유**: devbug 의 명시적 권장 그대로.
+  공공 Wi-Fi / 카페 / 코워킹 스페이스 / 사내 IDS 환경에서 unnecessary
+  attack surface 차단. localhost 호출 (IDE 확장 / 로컬 자동화) 은 그대로
+  동작.
+- macOS / Linux 영향 0 — set_decorations 는 cfg(windows) 분기, mobile
+  pairing 은 cross-platform 안전 (모든 OS default OFF, 사용자 옵션 ON).
+- Test baseline: **Rust 636 / Frontend 422** 그대로. 신규 테스트 0
+  (Settings UI / bind 분기는 e2e 영역).
+- Plan SSOT (#270): [`docs/plans/windowsMobilePairingTogglePlan_2026-05-07.md`](https://github.com/hang-in/tunaFlow/blob/main/docs/plans/windowsMobilePairingTogglePlan_2026-05-07.md).
+  Follow-up axis: 토글 hot-rebind / LAN 노출 인디케이터 / 페어링 디바이스
+  있을 때 OFF 회색 처리.
+
+## [0.1.7-beta-4] - 2026-05-07
+
+🚨 **Windows production 빌드 CSP IPC 차단 hotfix + bge-m3 메모리 최적화** —
+v0.1.7-beta-3 의 capabilities fix 후에도 외부 사용자 (devbug,
+[#264](https://github.com/hang-in/tunaFlow/issues/264)) 환경에서 회복 안 된
+3rd layer root cause: `tauri.conf.json` 의 CSP `connect-src` 가 Tauri 2 의
+IPC custom protocol (`http://ipc.localhost`) 을 명시 안 해 production 빌드
+에서 모든 plugin 호출 차단 → 사용자 설정 / WindowControls listener 등이
+*전부* fail. dev 모드는 vite localhost 라 postMessage 폴백 으로 우회되어
+표면 안 됐던 회귀. 같이 묶어 [#271](https://github.com/hang-in/tunaFlow/issues/271)
+의 bge-m3 메모리 최적화도 처리.
+
+### Fixed
+
+- **CSP IPC 프로토콜 + jsdelivr 폰트 허용** ([PR #272](https://github.com/hang-in/tunaFlow/pull/272)) —
+  `tauri.conf.json:26` 의 csp `connect-src` 에 `ipc:` (macOS/Linux) +
+  `http://ipc.localhost` (Windows production) 명시. plugin 호출 (`store|load`
+  / `event|listen` 등) 정상 동작 회복. style-src/font-src 에
+  `https://cdn.jsdelivr.net/gh/orioncactus/pretendard/` 경로 허용 (pretendard
+  variable 폰트 로드 회복).
+- **bge-m3 default pool size 1 — RSS 약 1.1GB 절감** ([PR #273](https://github.com/hang-in/tunaFlow/pull/273), issue [#271](https://github.com/hang-in/tunaFlow/issues/271)) —
+  `agents/embedder.rs` 의 default pool 을 2 → 1 로 변경. 1.1GB 모델 weight 가
+  in-process 로 두 번 로드되던 회귀 차단. `EMBED_SEMAPHORE = Semaphore(1)` 가
+  동시 추론을 직렬화하므로 throughput 회귀 0. 8GB RAM 환경 / 다른 앱 jetsam
+  간접 유발 위험 영역 개선.
+
+### Notes
+
+- **외부 사용자 회복 path**: v0.1.7-beta-3 까지의 fix (capabilities + drag
+  region 격리 + native frame fallback) 도 모두 유효한 fix 였으나 *CSP 가
+  IPC 자체를 차단* 한 상태에서는 효과 못 봄. v0.1.7-beta-4 부터 IPC 가 살아
+  capabilities + WindowControls 가 비로소 정상 동작. devbug 환경 새 자산
+  재설치 후 회복 확인 부탁드립니다.
+- dev 모드 (`npm run tauri dev` via `http://localhost:1420`) 가 production
+  과 다른 origin/CSP 적용 path 라 회귀 표면 차이가 진단 어려움. 향후 production
+  smoke 자동화 axis 검토 영역.
+- macOS / Linux 영향 0 — CSP 변경이 모든 OS 적용이지만 *기존 허용 영역
+  (dos.zone / github avatars / dataURI 등) 모두 보존* + IPC 프로토콜은
+  postMessage 폴백 으로 dev 환경에서 정상 동작했음.
+- Gemini code review (PR #272): connect-src 의 tauri.localhost 중복 제거 +
+  jsdelivr path 축소 권장 모두 수용.
+
+## [0.1.7-beta-3] - 2026-05-07
+
+🚨 **Windows 캡션바 root cause hotfix — Tauri 2 capabilities 권한 4건 추가** —
+v0.1.7-beta-2 의 진단 보강 ([PR #268](https://github.com/hang-in/tunaFlow/pull/268)) 이
+유효한 진단 path 였고 architect dev 환경 console 캡처로 결정타 확보:
+*"window.close not allowed. Permissions: core:window:allow-close"* 에러가 모든
+button click 에서 발생. PR #237 의 custom WindowControls 가 처음부터 동작한 적
+없는 진짜 root cause 는 capabilities permission 누락이었음.
+
+### Fixed
+
+- **Tauri 2 capabilities 권한 4건 추가** ([PR #269](https://github.com/hang-in/tunaFlow/pull/269)) —
+  `src-tauri/capabilities/default.json` 에 `core:window:allow-minimize` /
+  `allow-toggle-maximize` / `allow-close` / `allow-is-maximized` 명시 부족이
+  custom WindowControls button click 의 모든 호출을 *권한 부재* 로 차단하던
+  회귀 fix. 닫기 / 최소화 / 최대화 / Maximize state 동기화 (`onResized` listener)
+  모두 정상 동작.
+- **Drag region cascade button click 가로채기 방지** ([PR #269](https://github.com/hang-in/tunaFlow/pull/269)) —
+  `TitleBar` outer div 의 `data-tauri-drag-region` 제거 후 좌패딩 / 정보 row /
+  중앙 spacer 3 sub-section 에만 attribute 유지. button 영역이 drag region
+  descendant 에서 빠짐. WindowControls button 들에 `onMouseDown stopPropagation`
+  이중 안전망.
+
+### Added
+
+- **`tauri features = ["devtools"]`** ([PR #269](https://github.com/hang-in/tunaFlow/pull/269)) —
+  release 빌드에서도 `Ctrl+Shift+I` / `F12` 로 devtools 활성. 향후 회귀 발견
+  시 외부 사용자가 직접 console 로그 캡처 가능 (베타 단계 진단 가치).
+- **WindowControls click 실패 시 console.error 진단** ([PR #269](https://github.com/hang-in/tunaFlow/pull/269)) —
+  권한 누락 또는 Tauri API 영역 회귀가 다시 발생하면 즉시 표면화.
+
+### Notes
+
+- **외부 사용자 보고 회복 path**: 이전 v0.1.7-beta-2 release 시 *"fix 됐다"* 안내
+  드렸으나 진단 보강 단계만 들어간 상태였습니다. v0.1.7-beta-3 부터 권한 fix
+  적용으로 실제 button 동작 회복. devbug 환경에서 새 자산 재설치 후 회복 부탁드립니다.
+- **Backend `set_decorations(false)` 제거** — Windows native frame fallback 보존.
+  capabilities/WindowControls 어느 한쪽이 깨져도 OS native control 로 사용자
+  회복 path 확보 (이중 안전망). UI 중복 회피는 후속 PR 영역 (Gemini code review
+  #2 영역).
+- macOS / Linux 영향 0 — capabilities 추가는 cross-platform 안전, set_decorations
+  제거는 cfg(windows) 분기 안에 있던 호출.
+
+## [0.1.7-beta-2] - 2026-05-07
+
+🩹 **Windows 캡션바 hotfix + platform detect 진단 보강** —
+외부 사용자 (devbug, [#264](https://github.com/hang-in/tunaFlow/issues/264))
+보고 회복 1차 작업. v0.1.5-beta Windows 자산부터 잠재한 *"native titleBar /
+닫기·최소화·최대화 버튼 / 창 드래그·리사이즈 모두 부재"* 회귀 차단.
+config 분리로 macOS-only 옵션 영향 차단 + frontend `WindowControls` 의
+`isWindows` gate 신뢰성 향상 + 진단 console.warn 보강 (캡션바가 여전히
+부재 시 devtools 로 root cause 확정 가능).
+
+### Fixed
+
+- **Tauri config platform-conditional 분리** ([PR #268](https://github.com/hang-in/tunaFlow/pull/268)) —
+  `tauri.macos.conf.json` 신규로 macOS 전용 `titleBarStyle: "Overlay"` +
+  `hiddenTitle: true` 분리. base `tauri.conf.json` 에서 두 키 제거 +
+  `decorations: true` 명시 (Windows / Linux native chrome 의도 표현).
+  Tauri 2 의 platform-conditional merge 로 macOS 동작 보존.
+
+### Added
+
+- **`detectPlatformDiagnostic()` snapshot helper** ([PR #268](https://github.com/hang-in/tunaFlow/pull/268)) —
+  `lib/platform.ts` 가 `navigator.userAgentData.platform` 우선 + userAgent
+  regex 폴백으로 OS detect. `TitleBar.tsx` 가 module-load 시 1회,
+  `WindowControls.tsx` 가 mount 시 1회 console.warn 출력 — 사용자 devtools
+  에서 (a) 미마운트 vs (b) 마운트는 됐으나 invisible 구분 가능.
+
+### Notes
+
+- **사용자 검증 단서**: v0.1.7-beta-2 재설치 후 캡션바 회복 안 되면
+  Ctrl+Shift+I 로 devtools 열어 console 의 `[TitleBar] platform diag` /
+  `[WindowControls] mounted` 로그 확인. `isWindows: false` 면 detection
+  실패 (후속 PR axis), 둘 다 정상 출력 + 캡션바 부재면 z-index/styling
+  axis.
+- macOS / Linux 영향 0 (회귀 가드): macOS override 에 두 키 살아있고
+  base 의 `decorations: true` 는 Linux default 와 동일.
+
+## [0.1.7-beta] - 2026-05-07
+
+🩹 **Roundtable 합의 영구화 + RT marker 격리 + Architect ContextPack 인계** —
+외부 사용자 (devbug, [#263](https://github.com/hang-in/tunaFlow/issues/263))
+보고 회복. RT 환각/오동작 3 영역 (라운드 간 합의 망각 / main conv 단일
+dispatch 시 합의 무시 / Architect 가 RT 대화 내역 접근 못 함) 의 root cause
+3중 복합 fix. *"사용자 RT 사용 포기"* 단계 → 정상 사용 회복 path 도입.
+
+### Added
+
+- **`roundtable_consensus` 테이블** (DB migration v50) — RT round 간 axis
+  별 합의 항목을 영구 누적. 컬럼: id / conversation_id / round_index / axis /
+  decision / participants(json) / confidence / created_at. INDEX:
+  `idx_roundtable_consensus_conv_round`.
+- **합의 추출 helper** — synthesizer 응답에서 `<!-- tunaflow:consensus -->`
+  JSON fence (primary) 또는 `## Agreed axes` markdown bullet (fallback) 으로
+  axis 추출 후 `roundtable_consensus` row 누적.
+- **synthesizer prompt 의 *"## Consensus reached so far"* 섹션** — 라운드
+  N+1 의 synthesizer + 참여자 prompt 에 라운드 1~N 의 누적 합의 명시 포함.
+  같은 합의 재시도 환각 차단 (시나리오 B 회복 핵심 path).
+- **`messages.rt_round_index` 컬럼** (DB migration v51, nullable) — RT round
+  헤더 + 참여자 메시지 + synthesizer 헤더에 round_num 기록. 부분 INDEX
+  `idx_messages_rt_round`.
+- **`load_recent_messages_excluding_rt()` helper** — single agent dispatch
+  시 ContextPack 의 `current_messages` 가 RT round transcript 를 *주제별
+  컨텍스트* 로 prepend 하지 않음 (시나리오 A 회복 핵심 path).
+- **`build_rt_consensus_section()` helper** — Architect dispatch / single
+  agent dispatch 가 받는 ContextPack 에 *"## Roundtable Consensus"* 섹션
+  명시 인계. 라운드별 axis / decision / participants 누적 list (시나리오
+  C 회복 핵심 path). branch shadow conv 도 cover.
+
+### Fixed
+
+- **시나리오 A** (#263 보고 #1) — RT 진행 중 단일 에이전트 follow-up 질의
+  시 *라운드 재실행 흉내* / *합의 부정* 환각 회복. ContextPack 이 RT round
+  transcript 를 transcript 영역에서 제외하고 합의는 별 섹션으로 인계.
+- **시나리오 B** (#263 보고 #2) — RT 5 라운드 이상 진행 시 *같은 합의
+  재시도* / *3 fail 임계값 누적* / *사용자 fallback 영구 반복* 회복. 누적
+  합의가 synthesizer + 참여자 prompt 에 명시 등장.
+- **시나리오 C** (#263 보고 #3) — RT 종료 후 Architect dispatch 시 *마지막
+  라운드만 정리* 회복. 라운드별 누적 합의 + 참여자 의견 명시 인계.
+
+### Notes
+
+- DB migration v50 + v51 자동 진행. 기존 사용자 데이터 보존 (기존
+  `roundtable_brief` memo / messages 의 NULL `rt_round_index` 모두 그대로).
+- INV-RTC-1~8 모두 보존: round 본체 알고리즘 / Voting + MoA Synthesizer
+  본체 / conv 공유 정책 / 기존 ContextPack 섹션 / branchSessionPolicy
+  INV-1~5 / migration destructive 금지 / RT 미사용 영향 0.
+- Frontend 변경 0 (backend 영역). 사용자 가시 변화는 *RT 진행 동작 회복*
+  으로 표면됨.
+
+## [0.1.6-beta] - 2026-05-04
+
+**Workflow architectural change** — Reviewer verdict 처리 책임이 Meta-agent inbox
+에서 Architect main conv 로 이동. *"Of the agent, By the agent, For the agent"*
+원칙에 따라 *plan 사이클 결정* 은 Architect 의 design 책임으로 통합되고, Meta
+는 *Tier 2 brief 생성기 + 알림 inbox* 역할로 좁아짐 (전면 해체 아님).
+
+### Changed
+
+- **Reviewer verdict → Architect 직행** (PR #261) — Plan 리뷰 통과 / 5회 누적
+  실패 시 Meta inbox 알림이 아닌 Architect main conv 로 prompt 자동 dispatch.
+  - `review_passed` (pass) → Architect 가 *"plan 완료, 다음 우선순위 제안"*
+    prompt 자동 수신
+  - `doom_loop_escalated` (5회 fail 누적) → Architect 가 *plan 재설계* prompt
+    자동 수신 (기존엔 사용자 명시 클릭 필요)
+  - 신규 helper SSOT: `src/lib/workflow/architectDispatch.ts` —
+    `dispatchArchitectNextPriority(plan)` / `dispatchArchitectRedesign(plan,
+    verdict, opts)`. `ReviewVerdictCard.handleRedesign()` (사용자 클릭) 도 같은
+    helper 재사용.
+  - doom warn (3회 fail) 은 사용자 결정 영역 보존 — `plan_event_log` 에
+    `doom_loop_warning` event 만 남고 Architect 자동 호출 없음
+- **MetaNotificationKind 정리** (PR #262) — review-cycle 4종 (`review_passed` /
+  `review_failed` / `doom_loop_warning` / `doom_loop_escalated`) deprecated.
+  `tier2_brief` 신규 — Tier 2 분석 (Haiku/Flash 저비용 brief) 결과 전용.
+  기존 inbox 의 deprecated kind row 는 fallback 라벨로 표시 (route navigation
+  / dismiss 정상). 마이그레이션 불필요.
+
+### Removed
+
+- **askMeta UX 폐지** (PR #260) — Meta 알림 inbox 의 *"메타에게 물어보기"* 버튼
+  / `askMetaAbout` callback / 관련 i18n 키 (`action_ask_meta`, `ask_about_*`)
+  제거. inbox 항목은 *읽기 / dismiss / route 이동* 만 동작. 사용자가 직접 메타에게
+  질문하는 흐름은 Meta floating chat 의 *채팅 탭 입력창* 으로 대체.
+
+### Notes
+
+- Tier 2 brief 분석 (`maybeTriggerMetaAnalysis`) 의 트리거 시점 (review_passed /
+  review_failed) + 엔진 (Haiku/Flash) + 분석 결과 dispatch 자체는 보존 — kind
+  만 `tier2_brief` 로 이동.
+- identity-trigger / memory auto-trigger / Rust `meta_agent/` 모듈 / Meta
+  conversation 자체 / `tool_request_failed` / `insight_detected` /
+  `plan_promoted` / `architect_redesign_requested` / `generic` 알림 모두 보존.
+- Plan SSOT: `docs/plans/reviewerVerdictDirectArchitectPlan_2026-05-04.md`
+  (10 invariants, 7 task → 3 PR 분리). c-2 scope (Meta role 부분 축소).
+- Test baseline: FE 401 → 422 (+21 — architectDispatch 단위 / verdict 분기 /
+  askMeta 비존재 가드). Rust 614 변동 없음.
+- Gemini code review medium feedback follow-up 동일 cycle 머지 (40bc1aa):
+  `architectDispatch` 의 `useChatStore` static import → dynamic
+  `await import("@/stores/chatStore")` 패턴 (다른 workflow 모듈과 일관성),
+  `MetaFloatingChat.test.tsx` 의 source-level regex 가드 brittleness 한계 +
+  의도 주석 보강.
+
 ## [0.1.5-beta] - 2026-05-03
 
 🩹 **devbug 외부 사용자 보고 #254 / #255 hotfix release** — 두 영역 자가 회복 path 회복.
