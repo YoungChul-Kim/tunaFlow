@@ -41,6 +41,19 @@ vi.mock("../api/artifacts", () => ({
   createArtifact: vi.fn(async () => undefined),
 }));
 
+// helpers — createArchitectDecisionArtifact 만 vi.fn() 으로 대체해
+// fire-and-forget 호출이 test 안에서 비결정적 mock 호출을 유발하지 않게 한다.
+// 나머지 helper (getPlanSlug / slugifyPlanTitle / buildPlanContext / …) 는
+// 실제 구현을 그대로 사용해야 cross-generator 일관성 검증 의미가 살아남는다
+// (PR #298 gemini review T6).
+vi.mock("./helpers", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("./helpers")>();
+  return {
+    ...actual,
+    createArchitectDecisionArtifact: vi.fn(async () => undefined),
+  };
+});
+
 import { getPlanSlug, slugifyPlanTitle } from "./helpers";
 import { approveAndStartImplementation } from "./implementWorkflow";
 import { autoRecoverSubtasks, loadTaskFileTitles } from "./planWorkflowService";

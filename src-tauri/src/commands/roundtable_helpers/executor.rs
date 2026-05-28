@@ -58,15 +58,22 @@ pub async fn run_participant(
             // localhost:11434. spawn_blocking 안의 sync 컨텍스트라 tokio
             // current-thread handle 로 block_on 한다.
             "vllm" => {
-                let rt = tokio::runtime::Handle::current();
-                let res = rt.block_on(async {
-                    openai_compat::stream_run_with_base(
-                        run_input,
-                        openai_compat::vllm_base_url(),
-                        |_: String| {},
-                        |_: String| {},
-                    ).await
-                });
+                // Handle::current() 는 non-Tokio context 시 panic. try_current()
+                // 으로 graceful 처리 — commands/agents.rs 의 vllm eval 패턴과
+                // 일관 (PR #297 T5).
+                let res = match tokio::runtime::Handle::try_current() {
+                    Ok(rt) => rt.block_on(async {
+                        openai_compat::stream_run_with_base(
+                            run_input,
+                            openai_compat::vllm_base_url(),
+                            |_: String| {},
+                            |_: String| {},
+                        ).await
+                    }),
+                    Err(_) => Err(AppError::Agent(
+                        "No tokio runtime available for vllm participant".into(),
+                    )),
+                };
                 (res, "vllm")
             }
             _ => (
