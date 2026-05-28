@@ -4,6 +4,19 @@ All notable changes to tunaFlow are recorded here.
 Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/);
 versioning follows [SemVer](https://semver.org/spec/v2.0.0.html).
 
+## [0.1.9-beta] - 2026-05-28
+
+🎉 **vLLM 6th UI-connected engine (외부 contributor yodakrkids)** — OpenAI-compatible API path 재사용, 기존 5 engines (claude / codex / gemini / ollama / lmstudio) + vLLM = 6.
+
+### Added
+
+- **vLLM engine** (PR #297, supersedes external #296 by yodakrkids) — RT / meta-agent / settings 전 영역 통합. HTTP endpoint + `VLLM_API_KEY` env var. `openai_compat::stream_run_with_base(vllm_base_url(), ...)` 라우팅. Gemini critical 4 fix 포함 (executor.rs vLLM 분기 ollama 잘못 라우팅 → vllm_base_url 명시, agents.rs eval path 동일, agent_detect.rs `probe_vllm` Authorization header). 18 files, +248/-50.
+
+### Notes
+
+- 외부 contributor yodakrkids 의 첫 PR #296 (vLLM scaffold) 가 base. Gemini code review critical 4 항목 follow-up commit 후 PR #297 로 supersede 머지.
+- vLLM = OpenAI-compatible 이라 기존 ollama / lmstudio 와 같은 `openai_compat` layer 재사용. ollama / lmstudio 동작 변경 0.
+
 ## [0.1.8-beta-5] - 2026-05-28
 
 🩹 **Windows agents/ batch arg escape hotfix + MetaAgent endpoint UX** — 외부 사용자 보고 2 건 즉시 대응.
