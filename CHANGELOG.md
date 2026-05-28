@@ -4,6 +4,20 @@ All notable changes to tunaFlow are recorded here.
 Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/);
 versioning follows [SemVer](https://semver.org/spec/v2.0.0.html).
 
+## [0.1.8-beta-5] - 2026-05-28
+
+🩹 **Windows agents/ batch arg escape hotfix + MetaAgent endpoint UX** — 외부 사용자 보고 2 건 즉시 대응.
+
+### Fixed
+
+- **Windows `.cmd` 인자 escape 회귀** (PR #294, 외부 사용자 메신저 보고) — Rust 1.77+ batch arg escape 강화 (CVE-2024-24576) 에 의해 `Failed to spawn gemini (...gemini.cmd): batch file arguments are invalid` 에러. PR #278 의 `.cmd`/`.bat` → `cmd /C` wrapping 패턴이 `commands/{project_onboarding, agent_detect, search/query_expand}.rs` 만 cover 했고 **`agents/` 영역의 실제 send 경로 (gemini.rs / codex.rs / opencode.rs / claude.rs audit) 누락**. `src-tauri/src/agents/win_spawn.rs` 신규 — `wrap_windows_script` helper SSOT + 4 spawn site 일괄 적용. `cfg(target_os = "windows")` 분기 엄격, macOS / Linux 영향 0.
+- **MetaAgentSelector endpoint 자동 detect trigger UX** (PR #295, 외부 사용자 메신저 보고) — LM Studio Endpoint 에 `192.168.1.1` 입력 중 `.` 칠 때마다 600ms debounce 후 메타에이전트 검색이 자동 트리거되던 회귀. `onEndpointChange` 의 auto-detect 제거 → **Enter 키 + 신규 RefreshCw 버튼** 으로 명시 트리거. ollama / lmstudio 양쪽 동일 패턴.
+
+### Notes
+
+- v0.1.8-beta-4 외부 사용자 보고 follow-up. 두 영역 모두 Windows / endpoint UX 가시 회귀라 minor bump 의 patch suffix 로 release.
+- Windows CI 매트릭스 (Tauri Lite Windows) 는 release tag push 시 build.yml 에서만 동작 — PR 단계 CI (rust-check + frontend-check + eval) 는 self-hosted Linux 한정. Windows 실측은 release publish 후 외부 사용자 환경에서 검증.
+
 ## [0.1.8-beta-4] - 2026-05-12
 
 🩹 **Windows main chat hang hotfix — 외부 contributor devbug 의 첫 PR** — rawq sidecar spawn 시 stdout/stderr drain 누락 + timeout 부재로 Windows 환경에서 채팅 입력 시 main chat 이 hang 되던 회귀.
