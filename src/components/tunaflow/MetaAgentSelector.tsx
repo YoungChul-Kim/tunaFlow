@@ -1,6 +1,6 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
-import { CheckCircle2, Loader2, AlertTriangle, ChevronDown, ExternalLink } from "lucide-react";
+import { CheckCircle2, Loader2, AlertTriangle, ChevronDown, ExternalLink, RefreshCw } from "lucide-react";
 import { useTranslation } from "react-i18next";
 import { cn } from "@/lib/utils";
 import { useChatStore } from "@/stores/chatStore";
@@ -65,7 +65,6 @@ export function MetaAgentSelector({ onProceed, onSkip, projectName }: Props) {
   const [modelByEngine, setModelByEngine] = useState<Record<string, string>>({});
 
   const [skipConfirm, setSkipConfirm] = useState(false);
-  const debounceRef = useRef<number | null>(null);
 
   // Dynamic model discovery — shared with Settings AgentsSection.
   // `engineModels` is populated by `list_engine_models` (Rust) and refreshed
@@ -132,16 +131,12 @@ export function MetaAgentSelector({ onProceed, onSkip, projectName }: Props) {
     });
   }, [detections, engineModels]);
 
+  // 외부 사용자 보고 (e.g. LM Studio endpoint 에 `192.168.1.1` 입력 중 `.` 칠
+  // 때마다 자동 detect 가 발동) — onChange 는 local state 만 갱신하고, 실제
+  // detect 는 Enter 키 또는 옆 새로고침 버튼 같은 명시 액션으로만 트리거한다.
   const onEndpointChange = (engine: "ollama" | "lmstudio", value: string) => {
     if (engine === "ollama") setOllamaEndpoint(value);
     else setLmstudioEndpoint(value);
-
-    if (debounceRef.current) window.clearTimeout(debounceRef.current);
-    debounceRef.current = window.setTimeout(() => {
-      const o = engine === "ollama" ? value : ollamaEndpoint;
-      const l = engine === "lmstudio" ? value : lmstudioEndpoint;
-      runDetect(o, l);
-    }, 600);
   };
 
   const canProceed = useMemo(() => {
@@ -247,7 +242,8 @@ export function MetaAgentSelector({ onProceed, onSkip, projectName }: Props) {
                     <div className="text-[10px] text-muted-foreground/70 font-mono truncate">{d.path}</div>
                   )}
 
-                  {/* HTTP endpoint editor */}
+                  {/* HTTP endpoint editor — Enter 키 또는 새로고침 버튼으로만
+                       detect 트리거. onChange 는 local state 갱신만 한다. */}
                   {d.kind === "http" && (
                     <div className="flex items-center gap-2">
                       <span className="text-[10px] text-muted-foreground/60 shrink-0">Endpoint</span>
@@ -255,8 +251,25 @@ export function MetaAgentSelector({ onProceed, onSkip, projectName }: Props) {
                         type="text"
                         value={d.engine === "ollama" ? ollamaEndpoint : lmstudioEndpoint}
                         onChange={(e) => onEndpointChange(d.engine as "ollama" | "lmstudio", e.target.value)}
+                        onKeyDown={(e) => {
+                          if (e.key === "Enter") {
+                            e.preventDefault();
+                            runDetect(ollamaEndpoint, lmstudioEndpoint);
+                          }
+                        }}
                         className="flex-1 text-[10px] font-mono bg-background border border-border/60 rounded px-2 py-1 focus:outline-none focus:border-primary/60"
+                        data-testid={`meta-agent-endpoint-${d.engine}`}
                       />
+                      <button
+                        type="button"
+                        onClick={() => runDetect(ollamaEndpoint, lmstudioEndpoint)}
+                        title={t("meta_agent.endpoint_refresh")}
+                        aria-label={t("meta_agent.endpoint_refresh")}
+                        className="shrink-0 p-1 rounded border border-border/60 text-muted-foreground hover:text-foreground hover:border-primary/60 focus:outline-none focus:border-primary/60 transition-colors"
+                        data-testid={`meta-agent-endpoint-refresh-${d.engine}`}
+                      >
+                        <RefreshCw className="w-3 h-3" />
+                      </button>
                     </div>
                   )}
 
