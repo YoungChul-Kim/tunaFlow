@@ -1,6 +1,6 @@
 use std::io::{BufRead, BufReader, Read, Write as IoWrite};
 use std::path::PathBuf;
-use std::process::{Command, Stdio};
+use std::process::Stdio;
 use std::thread;
 use serde::Deserialize;
 use crate::errors::AppError;
@@ -367,7 +367,11 @@ where
     G: FnMut(String),
     C: Fn() -> bool,
 {
-    let mut cmd = Command::new("claude");
+    // Windows: bare name `"claude"` 는 helper 의 `.cmd`/`.bat` 분기에 도달
+    // 하지 않아 동작 변경 0 (현재 PATHEXT 가 `claude.cmd` 를 잡으면 batch arg
+    // escape 회귀 가능성 잠복). 향후 `resolve_claude_binary()` 결과를
+    // full path 로 넘기는 follow-up PR 에서 자동으로 `cmd /C` 분기 활성.
+    let mut cmd = crate::agents::win_spawn::wrap_windows_script("claude", &[]);
     cmd.no_console();
     cmd.arg("-p")
         .arg(&input.prompt)
@@ -644,7 +648,10 @@ where
 /// Caller must NOT hold the DbState lock while calling this function,
 /// since the subprocess can take an arbitrarily long time.
 pub fn run(input: RunInput) -> Result<RunOutput, AppError> {
-    let mut cmd = Command::new("claude");
+    // Windows: bare name `"claude"` 는 helper 분기 도달 X (위 `stream_run_once`
+    // 와 동일 이유). SSOT helper 통과 형태로 통일해 후속 PR 에서 full path
+    // 로 전환 시 자동 `cmd /C` 분기.
+    let mut cmd = crate::agents::win_spawn::wrap_windows_script("claude", &[]);
     cmd.no_console();
     cmd.arg("-p")
         .arg(&input.prompt)

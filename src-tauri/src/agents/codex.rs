@@ -1,8 +1,9 @@
 use std::io::{BufRead, BufReader, Read, Write};
-use std::process::{Command, Stdio};
+use std::process::Stdio;
 use std::thread;
 
 use crate::agents::claude::{RunInput, RunOutput};
+use crate::agents::win_spawn::wrap_windows_script;
 use crate::errors::AppError;
 use crate::no_console::NoConsole;
 
@@ -54,7 +55,9 @@ fn push_agent_text_dedup(texts: &mut Vec<String>, incoming: &str) {
 pub fn run(input: RunInput) -> Result<RunOutput, AppError> {
     let (codex_cmd, codex_script) = resolve_codex();
 
-    let mut cmd = Command::new(&codex_cmd);
+    // Windows: codex_cmd 가 npm `.cmd` wrapper 면 cmd /C 로 wrapping —
+    // Rust 1.77+ batch arg escape (CVE-2024-24576) 회피.
+    let mut cmd = wrap_windows_script(&codex_cmd, &[]);
     cmd.no_console();
     if let Some(ref script) = codex_script {
         cmd.arg(script);
@@ -232,7 +235,8 @@ where
 {
     let (codex_cmd, codex_script) = resolve_codex();
 
-    let mut cmd = Command::new(&codex_cmd);
+    // Windows: `.cmd` wrapper → cmd /C wrapping (위 `run()` 와 동일 이유).
+    let mut cmd = wrap_windows_script(&codex_cmd, &[]);
     cmd.no_console();
     if let Some(ref script) = codex_script {
         cmd.arg(script);
