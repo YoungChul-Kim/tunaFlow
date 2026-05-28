@@ -4,6 +4,25 @@ All notable changes to tunaFlow are recorded here.
 Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/);
 versioning follows [SemVer](https://semver.org/spec/v2.0.0.html).
 
+## [0.1.9-beta-2] - 2026-05-28
+
+🩹 **Plan / Dev / Reviewer subtask file path 일관화 hotfix** — 외부 사용자 메신저 보고.
+
+### Fixed
+
+- **Plan → Dev handoff 의 subtask 파일명 mismatch** (PR #298) — Plan chat (Architect 작성 요청) 의 안내 `plan-task-01..04.md` 와 Dev chat (Architect→Developer handoff) 의 `plan-10-task-00..03.md` 가 **다른 slug + 다른 indexing** 으로 분기되어 Developer 가 작성한 파일을 못 찾는 회귀. 한글 title plan 누적 시 backend `slugify_title` fallback `"plan"` + `find_unique_slug` collision counter (`plan`, `plan-2`, ..., `plan-10`) 와 frontend `slugifyPlanTitle` fallback `"plan"` 가 분기. 4 task fix:
+  - **T1** `PlanProposalCard.tsx`: slug source = DB `plan.slug` (createPlan 응답) — `getPlanSlug` 통과로 DB slug 우선. 4 generator (Plan chat / Dev chat / `loadTaskFileTitles` / `reviewWorkflow`) 모두 같은 slug 사용
+  - **T2** `implementWorkflow.ts`: file path 1-indexed 통일 (`s.idx + 1`). DB `plan_subtasks.idx` 자체는 0-indexed 보존, file path 만 `loadTaskFileTitles` 의 `for i=1` 와 일관
+  - **T3** Dev chat prompt 에 `**전체 계획서**: docs/plans/{slug}.md` 추가 (Plan chat 과 대칭)
+  - **T4** 신규 vitest 13 케이스 — cross-generator consistency (한글/영문/legacy 시나리오)
+  - `autoRecoverSubtasks` 의 regex 는 0-indexed legacy file 도 backward compat 매칭
+
+### Notes
+
+- 본 hotfix 는 vLLM (v0.1.9-beta) 와 별 axis — vLLM 머지 후 외부 사용자 메신저 보고로 발견. 같은 minor 안 patch suffix 로 release.
+- backend `slugify_title` 의 `"plan"` fallback + `find_unique_slug` collision noise (사용자 한글 plan 누적 시 `plan-N` 자동 증가) 자체는 별 plan 영역. 본 fix 는 4 generator slug source 일관화만.
+- 기존 사용자 환경의 0-indexed legacy file (예: `plan-task-00.md`) 은 `autoRecoverSubtasks` regex 가 매칭하여 plan expand 정상. 새 plan 부터는 1-indexed.
+
 ## [0.1.9-beta] - 2026-05-28
 
 🎉 **vLLM 6th UI-connected engine (외부 contributor yodakrkids)** — OpenAI-compatible API path 재사용, 기존 5 engines (claude / codex / gemini / ollama / lmstudio) + vLLM = 6.
