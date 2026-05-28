@@ -11,6 +11,7 @@ const ENGINE_ICONS: Record<string, string> = {
 const ENGINE_INITIALS: Record<string, string> = {
   ollama: "O",
   lmstudio: "L",
+  vllm: "V",
 };
 
 interface AgentAvatarProps {

@@ -87,6 +87,41 @@ pub fn lmstudio_base_url() -> String {
         .unwrap_or_else(|_| "http://localhost:1234".into())
 }
 
+/// vLLM base URL (default: localhost:8000)
+pub fn vllm_base_url() -> String {
+    std::env::var("VLLM_ENDPOINT")
+        .unwrap_or_else(|_| "http://localhost:8000".into())
+}
+
+/// Discover vLLM models via OpenAI-compatible `/v1/models` endpoint.
+pub fn discover_vllm() -> Option<Vec<String>> {
+    let endpoint = vllm_base_url();
+    let url = format!("{}/v1/models", endpoint.trim_end_matches('/'));
+
+    let client = reqwest::blocking::Client::builder()
+        .timeout(std::time::Duration::from_secs(3))
+        .build()
+        .ok()?;
+
+    let mut req = client.get(&url);
+    if let Ok(token) = std::env::var("VLLM_API_KEY") {
+        req = req.header("Authorization", format!("Bearer {}", token));
+    }
+    let resp = req.send().ok()?;
+    if !resp.status().is_success() {
+        eprintln!("[openai_compat] vllm {} → {}", url, resp.status());
+        return None;
+    }
+
+    let body: serde_json::Value = resp.json().ok()?;
+    let data = body.get("data")?.as_array()?;
+    let models: Vec<String> = data.iter()
+        .filter_map(|m| m.get("id").and_then(|v| v.as_str()).map(String::from))
+        .collect();
+
+    if models.is_empty() { None } else { Some(models) }
+}
+
 pub async fn stream_run_with_base<F, G>(
     input: RunInput,
     base: String,
@@ -128,7 +163,13 @@ where
         tools: Some(tools_json),
     };
 
-    let engine_name = if base.contains(":1234") || base.contains("lmstudio") { "LM Studio" } else { "Ollama" };
+    let engine_name = if base.contains(":1234") || base.contains("lmstudio") {
+        "LM Studio"
+    } else if base.contains(":8000") || base.contains("vllm") {
+        "vLLM"
+    } else {
+        "Ollama"
+    };
     on_progress(format!("{} ({}) initializing...", engine_name, model));
 
     let client = Client::builder()
@@ -137,10 +178,14 @@ where
         .map_err(|e| AppError::Agent(format!("HTTP client build failed: {}", e)))?;
 
     let mut req = client.post(&url).json(&body);
-    if let Ok(token) = std::env::var("LMSTUDIO_API_KEY") {
-        if engine_name == "LM Studio" {
-            req = req.header("Authorization", format!("Bearer {}", token));
-        }
+    // Apply API key based on engine
+    let api_key = match engine_name {
+        "LM Studio" => std::env::var("LMSTUDIO_API_KEY").ok(),
+        "vLLM" => std::env::var("VLLM_API_KEY").ok(),
+        _ => None,
+    };
+    if let Some(token) = api_key {
+        req = req.header("Authorization", format!("Bearer {}", token));
     }
     let response = req
         .send()
@@ -203,7 +248,13 @@ where
         tools: None,
     };
 
-    let engine_name = if base.contains(":1234") { "LM Studio" } else { "Ollama" };
+    let engine_name = if base.contains(":1234") || base.contains("lmstudio") {
+        "LM Studio"
+    } else if base.contains(":8000") || base.contains("vllm") {
+        "vLLM"
+    } else {
+        "Ollama"
+    };
     on_progress(format!("{} ({}) running (no tools)...", engine_name, model));
 
     let client = Client::builder()
@@ -212,10 +263,13 @@ where
         .map_err(|e| AppError::Agent(format!("HTTP client build failed: {}", e)))?;
 
     let mut req = client.post(&url).json(&body);
-    if let Ok(token) = std::env::var("LMSTUDIO_API_KEY") {
-        if engine_name == "LM Studio" {
-            req = req.header("Authorization", format!("Bearer {}", token));
-        }
+    let api_key = match engine_name {
+        "LM Studio" => std::env::var("LMSTUDIO_API_KEY").ok(),
+        "vLLM" => std::env::var("VLLM_API_KEY").ok(),
+        _ => None,
+    };
+    if let Some(token) = api_key {
+        req = req.header("Authorization", format!("Bearer {}", token));
     }
     let response = req.send().await
         .map_err(|e| AppError::Agent(format!("OpenAI-compatible API 요청 실패: {}", e)))?;

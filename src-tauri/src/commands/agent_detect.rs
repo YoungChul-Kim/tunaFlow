@@ -246,24 +246,92 @@ async fn probe_lmstudio(endpoint: &str) -> AgentDetection {
     det
 }
 
+async fn probe_vllm(endpoint: &str) -> AgentDetection {
+    // vLLM uses OpenAI-compatible /v1/models endpoint
+    let base_raw = endpoint.trim_end_matches('/');
+    let base = if base_raw.ends_with("/v1") { base_raw.to_string() } else { format!("{}/v1", base_raw) };
+    let url = format!("{}/models", base);
+
+    let mut det = AgentDetection {
+        engine: "vllm".into(),
+        kind: "http",
+        installed: false,
+        version: None,
+        path: None,
+        endpoint: Some(base_raw.to_string()),
+        models: vec![],
+        note: None,
+    };
+
+    let client = match reqwest::Client::builder()
+        .timeout(Duration::from_millis(PROBE_TIMEOUT_MS))
+        .build()
+    {
+        Ok(c) => c,
+        Err(e) => { det.note = Some(format!("reqwest build error: {e}")); return det; }
+    };
+
+    eprintln!("[agent-detect] probe vllm: GET {}", url);
+    // vLLM 인스턴스가 API key 인증으로 보호된 경우 (`--api-key` 옵션) Authorization
+    // 헤더가 없으면 401 로 거부되어 detect 가 실패한다. VLLM_API_KEY env 가 있으면
+    // Bearer 토큰을 붙여서 보낸다 (없으면 평문 그대로 — 로컬 비보호 인스턴스 호환).
+    // openai_compat::discover_vllm 의 동일 패턴.
+    let mut req = client.get(&url);
+    if let Ok(token) = std::env::var("VLLM_API_KEY") {
+        if !token.is_empty() {
+            req = req.header("Authorization", format!("Bearer {}", token));
+        }
+    }
+    match req.send().await {
+        Ok(resp) if resp.status().is_success() => {
+            match resp.json::<OpenAiModelsResponse>().await {
+                Ok(body) => {
+                    det.installed = true;
+                    det.models = body.data.into_iter().map(|m| m.id).collect();
+                    eprintln!("[agent-detect] vllm ok — {} models", det.models.len());
+                }
+                Err(e) => {
+                    eprintln!("[agent-detect] vllm parse error: {e}");
+                    det.note = Some(format!("응답 파싱 실패: {e}"));
+                }
+            }
+        }
+        Ok(resp) => {
+            let status = resp.status();
+            eprintln!("[agent-detect] vllm status {}", status);
+            det.note = Some(format!("HTTP {status}"));
+        }
+        Err(e) => {
+            eprintln!("[agent-detect] vllm unreachable: {e}");
+            det.note = Some(if e.is_timeout() { "timeout".into() } else { "not reachable".into() });
+        }
+    }
+    det
+}
+
 // ─── Tauri command ───────────────────────────────────────────────────────────
 
 #[tauri::command]
 pub async fn detect_available_agents(
     ollama_endpoint: Option<String>,
     lmstudio_endpoint: Option<String>,
+    vllm_endpoint: Option<String>,
 ) -> Vec<AgentDetection> {
     let ollama_ep = ollama_endpoint.unwrap_or_else(|| "http://localhost:11434".into());
     let lmstudio_ep = lmstudio_endpoint.unwrap_or_else(|| "http://localhost:1234/v1".into());
+    let vllm_ep = vllm_endpoint.unwrap_or_else(|| {
+        std::env::var("VLLM_ENDPOINT").unwrap_or_else(|_| "http://localhost:8000".into())
+    });
 
     // CLI probes — 병렬
-    let (claude, codex, gemini, ollama, lmstudio) = tokio::join!(
+    let (claude, codex, gemini, ollama, lmstudio, vllm) = tokio::join!(
         probe_cli("claude", "claude", &["--version"]),
         probe_cli("codex",  "codex",  &["--version"]),
         probe_cli("gemini", "gemini", &["--version"]),
         probe_ollama(&ollama_ep),
         probe_lmstudio(&lmstudio_ep),
+        probe_vllm(&vllm_ep),
     );
 
-    vec![claude, codex, gemini, ollama, lmstudio]
+    vec![claude, codex, gemini, ollama, lmstudio, vllm]
 }

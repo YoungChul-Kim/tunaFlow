@@ -52,6 +52,23 @@ pub async fn run_participant(
             "gemini" => (gemini::run(run_input), "gemini"),
             "opencode" => (opencode::run(run_input), "opencode"),
             "ollama" => (openai_compat::run(run_input), "ollama"),
+            // vllm: openai_compat::run() hardcodes ollama_base_url() → must
+            // route through stream_run_with_base() with vllm_base_url() so the
+            // request reaches the vLLM server (localhost:8000) instead of
+            // localhost:11434. spawn_blocking 안의 sync 컨텍스트라 tokio
+            // current-thread handle 로 block_on 한다.
+            "vllm" => {
+                let rt = tokio::runtime::Handle::current();
+                let res = rt.block_on(async {
+                    openai_compat::stream_run_with_base(
+                        run_input,
+                        openai_compat::vllm_base_url(),
+                        |_: String| {},
+                        |_: String| {},
+                    ).await
+                });
+                (res, "vllm")
+            }
             _ => (
                 Err(AppError::Agent(format!("unsupported engine: {}", engine_key_owned))),
                 "unknown",
@@ -168,7 +185,7 @@ pub(super) async fn stream_participant(
             .await
             .unwrap_or_else(|_| (Err(AppError::Agent("participant task panicked".into())), "unknown"))
         }
-        "ollama" => {
+        "ollama" | "vllm" => {
             let a = app.clone(); let mi = msg_id.clone(); let ci = conversation_id.clone();
             let on_chunk = {
                 let a = a.clone(); let mi = mi.clone(); let ci = ci.clone();
@@ -179,7 +196,19 @@ pub(super) async fn stream_participant(
                 }
             };
             let on_progress = |_: String| {};
-            (openai_compat::stream_run(run_input, on_progress, on_chunk).await, "ollama")
+            // openai_compat::stream_run() defaults to ollama_base_url(). For
+            // vLLM we must inject vllm_base_url() via stream_run_with_base() —
+            // otherwise the request routes to localhost:11434 (ollama).
+            let (label, base) = if engine_key_owned == "vllm" {
+                ("vllm", openai_compat::vllm_base_url())
+            } else {
+                ("ollama", std::env::var("OLLAMA_HOST")
+                    .unwrap_or_else(|_| "http://localhost:11434".into()))
+            };
+            (
+                openai_compat::stream_run_with_base(run_input, base, on_progress, on_chunk).await,
+                label,
+            )
         }
         "opencode" => {
             tokio::task::spawn_blocking(move || {

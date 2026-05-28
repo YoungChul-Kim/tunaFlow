@@ -182,7 +182,7 @@ export interface SendWithClaudeInput {
   userMessageId?: string;
   prompt: string;
   model?: string;
-  /** Engine key for backend routing (e.g. "ollama" vs "lmstudio") */
+  /** Engine key for backend routing (e.g. "ollama" / "lmstudio" / "vllm") */
   engine?: string;
   /** Passed directly when no agent is selected */
   systemPrompt?: string;
@@ -205,16 +205,16 @@ export interface SendWithClaudeInput {
   /** Absolute paths of image attachments — used by Codex CLI (`-i <path>`).
    *  Other engines read the image via `Read` tool from the prompt path section. */
   imagePaths?: string[];
-  /** Base URL override for OpenAI-compatible engines (ollama / lmstudio).
-   *  Empty/undefined falls back to env var (OLLAMA_HOST / LMSTUDIO_ENDPOINT)
-   *  then the hardcoded default. Issue #175 MVP. */
+  /** Base URL override for OpenAI-compatible engines (ollama / lmstudio / vllm).
+   *  Empty/undefined falls back to env var (OLLAMA_HOST / LMSTUDIO_ENDPOINT /
+   *  VLLM_ENDPOINT) then the hardcoded default. Issue #175 MVP. */
   customBaseUrl?: string;
 }
 
 export interface RoundtableParticipant {
   name: string;
   model?: string;
-  /** "claude" | "codex" | "gemini" | "ollama" | "lmstudio" — defaults to "claude" on backend */
+  /** "claude" | "codex" | "gemini" | "ollama" | "lmstudio" | "vllm" — defaults to "claude" on backend */
   engine?: string;
   /** Blind verifier — receives topic only, no prior/current transcript */
   blind?: boolean;

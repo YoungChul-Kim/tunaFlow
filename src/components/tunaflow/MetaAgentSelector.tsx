@@ -46,6 +46,7 @@ const ENGINE_META: Record<string, EngineMeta> = {
   gemini:   { label: "Gemini",    installHintKey: "", installHint: "npm install -g @google/gemini-cli",        docLink: "https://ai.google.dev/gemini-api/docs/cli" },
   ollama:   { label: "Ollama",    installHintKey: "ollama_install_hint",   defaultEndpoint: "http://localhost:11434" },
   lmstudio: { label: "LM Studio", installHintKey: "lmstudio_install_hint", defaultEndpoint: "http://localhost:1234/v1" },
+  vllm:     { label: "vLLM",      installHintKey: "vllm_install_hint",     defaultEndpoint: "http://localhost:8000" },
 };
 
 // CLI engines whose `models` list comes from the dynamic discovery store
@@ -60,6 +61,7 @@ export function MetaAgentSelector({ onProceed, onSkip, projectName }: Props) {
   const [detections, setDetections] = useState<AgentDetection[] | null>(null);
   const [ollamaEndpoint, setOllamaEndpoint] = useState("http://localhost:11434");
   const [lmstudioEndpoint, setLmstudioEndpoint] = useState("http://localhost:1234/v1");
+  const [vllmEndpoint, setVllmEndpoint] = useState("http://localhost:8000");
 
   const [selectedEngine, setSelectedEngine] = useState<string | null>(null);
   const [modelByEngine, setModelByEngine] = useState<Record<string, string>>({});
@@ -85,12 +87,13 @@ export function MetaAgentSelector({ onProceed, onSkip, projectName }: Props) {
   };
 
   // Initial + on-endpoint-change detection
-  const runDetect = async (oEp: string, lEp: string) => {
+  const runDetect = async (oEp: string, lEp: string, vEp: string) => {
     setDetections(null);
     try {
       const result = await invoke<AgentDetection[]>("detect_available_agents", {
         ollamaEndpoint: oEp,
         lmstudioEndpoint: lEp,
+        vllmEndpoint: vEp,
       });
       setDetections(result);
     } catch (e) {
@@ -106,7 +109,7 @@ export function MetaAgentSelector({ onProceed, onSkip, projectName }: Props) {
     if (engineModels.length === 0) {
       loadEngineModels().catch((e) => console.warn("[meta-agent] loadEngineModels", e));
     }
-    runDetect(ollamaEndpoint, lmstudioEndpoint);
+    runDetect(ollamaEndpoint, lmstudioEndpoint, vllmEndpoint);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
@@ -134,9 +137,10 @@ export function MetaAgentSelector({ onProceed, onSkip, projectName }: Props) {
   // 외부 사용자 보고 (e.g. LM Studio endpoint 에 `192.168.1.1` 입력 중 `.` 칠
   // 때마다 자동 detect 가 발동) — onChange 는 local state 만 갱신하고, 실제
   // detect 는 Enter 키 또는 옆 새로고침 버튼 같은 명시 액션으로만 트리거한다.
-  const onEndpointChange = (engine: "ollama" | "lmstudio", value: string) => {
+  const onEndpointChange = (engine: "ollama" | "lmstudio" | "vllm", value: string) => {
     if (engine === "ollama") setOllamaEndpoint(value);
-    else setLmstudioEndpoint(value);
+    else if (engine === "lmstudio") setLmstudioEndpoint(value);
+    else setVllmEndpoint(value);
   };
 
   const canProceed = useMemo(() => {
@@ -164,7 +168,11 @@ export function MetaAgentSelector({ onProceed, onSkip, projectName }: Props) {
     if (!canProceed || !selectedEngine) return;
     const det = detections!.find((d) => d.engine === selectedEngine)!;
     const endpoint = det.kind === "http"
-      ? (selectedEngine === "ollama" ? ollamaEndpoint : lmstudioEndpoint)
+      ? (selectedEngine === "ollama"
+          ? ollamaEndpoint
+          : selectedEngine === "lmstudio"
+            ? lmstudioEndpoint
+            : vllmEndpoint)
       : undefined;
     onProceed({
       engine: selectedEngine,
@@ -249,12 +257,12 @@ export function MetaAgentSelector({ onProceed, onSkip, projectName }: Props) {
                       <span className="text-[10px] text-muted-foreground/60 shrink-0">Endpoint</span>
                       <input
                         type="text"
-                        value={d.engine === "ollama" ? ollamaEndpoint : lmstudioEndpoint}
-                        onChange={(e) => onEndpointChange(d.engine as "ollama" | "lmstudio", e.target.value)}
+                        value={d.engine === "ollama" ? ollamaEndpoint : d.engine === "lmstudio" ? lmstudioEndpoint : vllmEndpoint}
+                        onChange={(e) => onEndpointChange(d.engine as "ollama" | "lmstudio" | "vllm", e.target.value)}
                         onKeyDown={(e) => {
                           if (e.key === "Enter") {
                             e.preventDefault();
-                            runDetect(ollamaEndpoint, lmstudioEndpoint);
+                            runDetect(ollamaEndpoint, lmstudioEndpoint, vllmEndpoint);
                           }
                         }}
                         className="flex-1 text-[10px] font-mono bg-background border border-border/60 rounded px-2 py-1 focus:outline-none focus:border-primary/60"
@@ -262,7 +270,7 @@ export function MetaAgentSelector({ onProceed, onSkip, projectName }: Props) {
                       />
                       <button
                         type="button"
-                        onClick={() => runDetect(ollamaEndpoint, lmstudioEndpoint)}
+                        onClick={() => runDetect(ollamaEndpoint, lmstudioEndpoint, vllmEndpoint)}
                         title={t("meta_agent.endpoint_refresh")}
                         aria-label={t("meta_agent.endpoint_refresh")}
                         className="shrink-0 p-1 rounded border border-border/60 text-muted-foreground hover:text-foreground hover:border-primary/60 focus:outline-none focus:border-primary/60 transition-colors"
@@ -321,6 +329,8 @@ export function MetaAgentSelector({ onProceed, onSkip, projectName }: Props) {
                             ? t("meta_agent.ollama_install_hint")
                             : meta.installHintKey === "lmstudio_install_hint"
                             ? t("meta_agent.lmstudio_install_hint")
+                            : meta.installHintKey === "vllm_install_hint"
+                            ? t("meta_agent.vllm_install_hint")
                             : meta.installHint}
                         </span>
                       </div>

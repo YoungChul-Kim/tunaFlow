@@ -19,13 +19,14 @@ import {
 
 // Keep in sync with ENGINE_CONFIGS (src/lib/engineConfig.ts). OpenCode removed;
 // Ollama + LMStudio share the openai-compatible runtime.
-const ENGINES = ["claude", "codex", "gemini", "ollama", "lmstudio"] as const;
+const ENGINES = ["claude", "codex", "gemini", "ollama", "lmstudio", "vllm"] as const;
 const ENGINE_LABELS: Record<(typeof ENGINES)[number], string> = {
   claude: "Claude",
   codex: "Codex",
   gemini: "Gemini",
   ollama: "Ollama",
   lmstudio: "LM Studio",
+  vllm: "vLLM",
 };
 
 export function AgentsSection() {
@@ -75,20 +76,22 @@ export function AgentsSection() {
   // Issue #175 MVP — Ollama / LM Studio base URL override.
   // Keyed by engine; appStore key pattern `engineEndpoint:{engine}` mirrors
   // existing conventions (activeSkills:{pk}, skillDetectionDismissed:{pk}).
-  const [endpointOverride, setEndpointOverride] = useState<Record<"ollama" | "lmstudio", string>>({
+  const [endpointOverride, setEndpointOverride] = useState<Record<"ollama" | "lmstudio" | "vllm", string>>({
     ollama: "",
     lmstudio: "",
+    vllm: "",
   });
   useEffect(() => {
     (async () => {
-      const [ol, ls] = await Promise.all([
+      const [ol, ls, vl] = await Promise.all([
         getSetting<string>("engineEndpoint:ollama", ""),
         getSetting<string>("engineEndpoint:lmstudio", ""),
+        getSetting<string>("engineEndpoint:vllm", ""),
       ]);
-      setEndpointOverride({ ollama: ol, lmstudio: ls });
+      setEndpointOverride({ ollama: ol, lmstudio: ls, vllm: vl });
     })();
   }, []);
-  const handleEndpointChange = async (engine: "ollama" | "lmstudio", value: string) => {
+  const handleEndpointChange = async (engine: "ollama" | "lmstudio" | "vllm", value: string) => {
     const trimmed = value.trim();
     setEndpointOverride((prev) => ({ ...prev, [engine]: trimmed }));
     await setSetting(`engineEndpoint:${engine}`, trimmed);
@@ -160,20 +163,22 @@ export function AgentsSection() {
               </div>
             </div>
 
-            {/* Issue #175 MVP — Ollama / LM Studio base URL override */}
-            {(selected.engine === "ollama" || selected.engine === "lmstudio") && (
+            {/* Issue #175 MVP — Ollama / LM Studio / vLLM base URL override */}
+            {(selected.engine === "ollama" || selected.engine === "lmstudio" || selected.engine === "vllm") && (
               <div>
                 <label className="text-tf-sm text-muted-foreground mb-1 block">
                   {t("agents.endpoint.label")}
                 </label>
                 <input
                   type="text"
-                  value={endpointOverride[selected.engine]}
-                  onChange={(e) => handleEndpointChange(selected.engine as "ollama" | "lmstudio", e.target.value)}
+                  value={endpointOverride[selected.engine as "ollama" | "lmstudio" | "vllm"]}
+                  onChange={(e) => handleEndpointChange(selected.engine as "ollama" | "lmstudio" | "vllm", e.target.value)}
                   placeholder={
                     selected.engine === "ollama"
                       ? t("agents.endpoint.placeholder_ollama")
-                      : t("agents.endpoint.placeholder_lmstudio")
+                      : selected.engine === "lmstudio"
+                        ? t("agents.endpoint.placeholder_lmstudio")
+                        : "http://localhost:8000"
                   }
                   className="w-full bg-background rounded-lg px-3 py-2 text-tf-caption font-mono outline-none border border-border/30 focus:border-ring/40"
                 />
