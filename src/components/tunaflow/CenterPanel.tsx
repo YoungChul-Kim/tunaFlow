@@ -266,8 +266,12 @@ export function CenterPanel() {
                   setPlanRefreshKey((k) => k + 1);
                 }}
                 onStatusChanged={() => {
+                  // Refresh the plan list only — do NOT force the filter back to
+                  // "plan-check". Forcing the stage here reset the user's active
+                  // workflow filter on every status change (done/draft etc.).
+                  // Phase changes still auto-switch via onPhaseChanged →
+                  // PHASE_TO_STAGE (intended, INV-BAF-4).
                   setPlanRefreshKey((k) => k + 1);
-                  setActiveStage("plan-check");
                 }}
                 onSwitchToChat={() => setActiveTab("chat")}
               />
