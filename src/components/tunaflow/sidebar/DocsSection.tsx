@@ -135,8 +135,18 @@ export function DocsSection({ projectPath, projectKey }: DocsSectionProps) {
 
   // 1b) T3 (gemini PR #301) — window focus / visibility 복귀 시 refresh trigger.
   // chat 에서 plan status 변경·새 plan 생성 후 사용자가 창으로 돌아올 때 1회 재로드.
+  // gemini PR #302: focus + visibilitychange 가 탭 복귀 시 거의 동시 발생 → bump 2회 →
+  // scanDocs/loadPlanMeta 중복 IPC. 1초 throttle 로 마지막 bump 이후 중복 호출 무시.
+  // lastBumpTime 은 effect closure 변수 (empty deps → 1회 생성, re-render 시 reset 안 됨).
   useEffect(() => {
-    const bump = () => setRefreshTick((n) => n + 1);
+    let lastBumpTime = 0;
+    const bump = () => {
+      const now = Date.now();
+      if (now - lastBumpTime > 1000) {
+        lastBumpTime = now;
+        setRefreshTick((n) => n + 1);
+      }
+    };
     const onVisibility = () => {
       if (document.visibilityState === "visible") bump();
     };
