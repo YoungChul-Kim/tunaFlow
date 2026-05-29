@@ -4,6 +4,21 @@ All notable changes to tunaFlow are recorded here.
 Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/);
 versioning follows [SemVer](https://semver.org/spec/v2.0.0.html).
 
+## [0.1.9-beta-3] - 2026-05-29
+
+🩹 **branch/RT agent 상태 유지 + workflow filter 유지 hotfix** — 다모앙 커뮤니티 사용자 보고 2건.
+
+### Fixed
+
+- **branch/RT 전환 시 agent 활성화 초기화** (PR #300, T1+T2) — branch 또는 roundtable 진입 시 선택된 engine/model/persona 가 default profile 로 reset 되던 회귀. branch shadow conversation (`branch:<id>`) 이 `_convEngineMap` 에 키가 없어 `NewMessageInput` restore effect 가 "첫 방문" 으로 인식 → default profile 강제 적용이 root cause. `branchSlice.openBranchStream` 에서 부모 conv 의 engine 을 shadow conv 키로 상속 (첫 진입만 — 사용자가 branch 안에서 변경한 engine 은 재진입 시 보존). 부모 미설정 시 기존 default 동작 보존.
+- **workflow filter 가 plan status 변경 후 강제 리셋** (PR #300, T3) — workflow "all" 필터에서 plan 의 done/draft 버튼 클릭 시 필터가 "plan-check" 으로 돌아가던 회귀. `CenterPanel` 의 `onStatusChanged` 콜백이 항상 `setActiveStage("plan-check")` 호출하던 것 제거. plan phase 변경 시의 자동 stage 전환 (`PHASE_TO_STAGE` 매핑) 은 의도된 동작이라 보존.
+
+### Notes
+
+- 두 fix 모두 frontend 한정 — Rust 변경 0. FE 491 → 496 tests (+5 신규).
+- RT participants/mode (DB `rt_config`) 의 shadow conv 상속은 별 이슈 — 본 hotfix 는 engine 상속만. 사용자 보고의 "agent 활성화" 가 engine selector 면 해결, RT participants 였으면 follow-up plan 필요.
+- 같은 사용자의 Plan/Dev 문서명 mismatch (#1) 는 v0.1.9-beta-2 의 PR #298 fix 로 처리됨 — codex-main 케이스 재현 확인 진행 중.
+
 ## [0.1.9-beta-2] - 2026-05-28
 
 🩹 **Plan / Dev / Reviewer subtask file path 일관화 hotfix** — 외부 사용자 메신저 보고.
