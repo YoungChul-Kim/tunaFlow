@@ -4,6 +4,27 @@ All notable changes to tunaFlow are recorded here.
 Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/);
 versioning follows [SemVer](https://semver.org/spec/v2.0.0.html).
 
+## [0.1.9-beta-4] - 2026-05-29
+
+📂 **docs/plans 정리 Phase 1 — 가상 필터 + index 자동 생성** — 다모앙 커뮤니티 사용자 요청.
+
+### Added
+
+- **docs/plans 가상 필터 + 상태 배지** (PR #301 + #302) — 좌측 DocsSection 의 `docs/plans/` 항목에 DB plan 메타 (status/updated_at) join 하여 상태 배지 표시 + status(draft/active/done/abandoned) / 날짜(최근 7일·30일·월별) 필터. **경로 불변** (물리 폴더 이동 X) — 기존 문서 navigation 정책 (`documentationNavigationModel`: "메타+인덱스로 navigation") 정합. 동반 파일 (`-task-NN`/`-review-rN`/`-result`) 및 DB 미등록 doc 은 graceful 평면 표시.
+- **`regenerate_plans_index` command** (PR #301) — `docs/plans/index.md` 의 active plan 테이블 + archive 요약을 DB plans 기준 자동 생성. `<!-- AUTO-INDEX-START/END -->` 마커 기반 부분 갱신 (수동 설명 영역 보존).
+
+### Fixed
+
+- **stale 상태 배지** (PR #302) — plan status 변경/새 plan 생성 후 사이드바 배지·필터가 갱신 안 되던 문제. window focus / visibilitychange 복귀 시 docs 스캔 + plan 메타 동시 재로드 (타이머 polling 없이).
+- **index 링크 깨짐** (PR #302) — plan title 에 `[`/`]` 포함 시 markdown link 문법 깨짐 → bracket escape.
+- **필터 후 빈 디렉터리 표시** (PR #302) — 필터로 자식이 모두 걸러진 디렉터리 숨김 (원래 빈 dir 은 유지).
+- **branch engine 상속 shallow copy** (PR #301, Gemini PR #300 review) — shadow conv engine 상속 시 `{ ...parentEngine }` shallow copy 로 shared-state mutation 방지.
+
+### Notes
+
+- docs/plans 정리 **Phase 1** (가상 필터 + index, 경로 불변). **Phase 2** (완료 plan 의 archive 물리 이동 + 재귀 읽기) 는 본 release 사용자 검증 후 별도 진행.
+- 필터 source = DB `plans` 테이블 (status/created_at 일관). frontend 한정 + index command — FE 496→516, Rust 656→662.
+
 ## [0.1.9-beta-3] - 2026-05-29
 
 🩹 **branch/RT agent 상태 유지 + workflow filter 유지 hotfix** — 다모앙 커뮤니티 사용자 보고 2건.
