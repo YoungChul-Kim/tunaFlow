@@ -104,6 +104,10 @@ export function DocsSection({ projectPath, projectKey }: DocsSectionProps) {
   // T2 — status/날짜 필터 (frontend state, 경로 불변).
   const [statusFilter, setStatusFilter] = useState<StatusFilter>("all");
   const [dateFilter, setDateFilter] = useState<DateFilter>("all");
+  // T3 (gemini PR #301) — docs 목록 + plan 메타 재로드 trigger. window focus /
+  // visibility 복귀 시 1회 증가 → chat 에서 일어난 plan status 변경·새 plan 생성이
+  // 사이드바 배지·필터에 반영되도록 stale 해소. 타이머 polling 안 함 (과도한 re-fetch 회피).
+  const [refreshTick, setRefreshTick] = useState(0);
   const fileViewer = useFileViewer();
   /** Toast 1회만 — 같은 (project,scope) 조합에서 재표시 X. */
   const warnedRef = useRef<Set<string>>(new Set());
@@ -129,7 +133,22 @@ export function DocsSection({ projectPath, projectKey }: DocsSectionProps) {
     };
   }, []);
 
-  // 2) projectPath / scope 변경 시 다시 스캔.
+  // 1b) T3 (gemini PR #301) — window focus / visibility 복귀 시 refresh trigger.
+  // chat 에서 plan status 변경·새 plan 생성 후 사용자가 창으로 돌아올 때 1회 재로드.
+  useEffect(() => {
+    const bump = () => setRefreshTick((n) => n + 1);
+    const onVisibility = () => {
+      if (document.visibilityState === "visible") bump();
+    };
+    window.addEventListener("focus", bump);
+    document.addEventListener("visibilitychange", onVisibility);
+    return () => {
+      window.removeEventListener("focus", bump);
+      document.removeEventListener("visibilitychange", onVisibility);
+    };
+  }, []);
+
+  // 2) projectPath / scope / refreshTick 변경 시 다시 스캔.
   useEffect(() => {
     if (!projectPath) {
       setDocs([]);
@@ -154,9 +173,11 @@ export function DocsSection({ projectPath, projectKey }: DocsSectionProps) {
       }
     });
     return () => { alive = false; };
-  }, [projectPath, scope, tSettings]);
+  }, [projectPath, scope, tSettings, refreshTick]);
 
-  // 3) projectKey 변경 시 DB plan 메타 로드 (T1 join source).
+  // 3) projectKey / refreshTick 변경 시 DB plan 메타 로드 (T1 join source).
+  // T3 (gemini PR #301): refreshTick 의존으로 plan status 변경·새 plan 이
+  // 배지·필터에 반영 (이전엔 projectKey 1회 로드 → stale).
   useEffect(() => {
     if (!projectKey) {
       setPlans([]);
@@ -167,7 +188,7 @@ export function DocsSection({ projectPath, projectKey }: DocsSectionProps) {
       if (alive) setPlans(rows);
     });
     return () => { alive = false; };
-  }, [projectKey]);
+  }, [projectKey, refreshTick]);
 
   /** slug → Plan. DB slug 가 곧 docs/plans/{slug}.md 파일명 (generate_plan_document). */
   const slugToPlan = useMemo(() => buildSlugToPlan(plans), [plans]);

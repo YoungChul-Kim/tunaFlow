@@ -158,4 +158,41 @@ describe("planDocsFilter — filterDocEntry tree (T2)", () => {
     expect(isFilterActive("done", "all")).toBe(true);
     expect(isFilterActive("all", "7d")).toBe(true);
   });
+
+  // gemini PR #301 (T2) — 빈 dir 처리.
+  it("필터로 자식 전부 걸러진 dir 은 숨김 (null)", () => {
+    const dir: DocEntry = {
+      name: "plans",
+      path: "/repo/docs/plans",
+      isDir: true,
+      children: [file("activePlan.md"), file("recentDraft.md")], // 둘 다 active/draft
+    };
+    // status=done → 두 plan 모두 탈락 → dir 비게 됨 → 숨김.
+    expect(filterDocEntry(dir, map, "done", "all", now)).toBeNull();
+  });
+
+  it("원래부터 빈 dir 은 필터 중에도 유지", () => {
+    const emptyDir: DocEntry = {
+      name: "emptyFolder",
+      path: "/repo/docs/plans/emptyFolder",
+      isDir: true,
+      children: [],
+    };
+    const result = filterDocEntry(emptyDir, map, "done", "all", now);
+    expect(result).not.toBeNull();
+    expect(result?.isDir).toBe(true);
+    expect(result?.children).toEqual([]);
+  });
+
+  it("자식 일부만 남으면 dir 유지 (남은 자식만 포함)", () => {
+    const dir: DocEntry = {
+      name: "plans",
+      path: "/repo/docs/plans",
+      isDir: true,
+      children: [file("donePlan.md"), file("activePlan.md")],
+    };
+    const result = filterDocEntry(dir, map, "done", "all", now);
+    expect(result).not.toBeNull();
+    expect(result?.children?.map((c) => c.name)).toEqual(["donePlan.md"]);
+  });
 });

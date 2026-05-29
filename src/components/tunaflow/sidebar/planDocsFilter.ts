@@ -65,8 +65,9 @@ export function matchesDateFilter(updatedAtMs: number, filter: DateFilter, now: 
 }
 
 /** entry 트리에 필터 적용 — DB plan 메타가 있는 파일만 status/날짜로 거른다.
- *  DB 미등록 doc·디렉터리·동반 파일은 항상 표시 (graceful, INV-DPO-1).
- *  디렉터리는 유지하고 자식만 재귀 필터. null 반환 = 숨김. */
+ *  DB 미등록 doc·동반 파일은 항상 표시 (graceful, INV-DPO-1).
+ *  디렉터리는 자식만 재귀 필터. 원래 자식이 있었는데 필터로 전부 걸러진 dir 은
+ *  숨긴다 (null). 원래부터 빈 dir 은 유지 (gemini PR #301, T2). null 반환 = 숨김. */
 export function filterDocEntry(
   entry: DocEntry,
   slugToPlan: Map<string, Plan>,
@@ -75,9 +76,12 @@ export function filterDocEntry(
   now: number,
 ): DocEntry | null {
   if (entry.isDir) {
-    const children = (entry.children ?? [])
+    const original = entry.children ?? [];
+    const children = original
       .map((c) => filterDocEntry(c, slugToPlan, statusFilter, dateFilter, now))
       .filter((c): c is DocEntry => c !== null);
+    // 원래 자식이 있었는데 필터로 전부 걸러짐 → 빈 dir 숨김. 원래 빈 dir 은 유지.
+    if (original.length > 0 && children.length === 0) return null;
     return { ...entry, children };
   }
   const plan = planForEntry(entry, slugToPlan);

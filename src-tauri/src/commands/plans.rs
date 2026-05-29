@@ -1009,7 +1009,12 @@ fn build_plans_index_block(plans: &[Plan]) -> String {
         for p in &active {
             let slug = p.slug.clone().unwrap_or_else(|| slugify(&p.title));
             let date = fmt_index_date(p.updated_at);
-            let title = p.title.replace('|', "\\|");
+            // markdown link `[title](path)` 안전: `|` (테이블 셀) + `[`/`]` (링크 텍스트) escape.
+            let title = p
+                .title
+                .replace('|', "\\|")
+                .replace('[', "\\[")
+                .replace(']', "\\]");
             s.push_str(&format!(
                 "| [{}](./{}.md) | {} | {} |\n",
                 title, slug, p.status, date
@@ -1557,6 +1562,17 @@ mod tests {
         // Archive summary counts.
         assert!(block.contains("완료(done): **1개**"));
         assert!(block.contains("중단(abandoned): **1개**"));
+    }
+
+    #[test]
+    fn index_block_escapes_brackets_and_pipe_in_title() {
+        // Gemini PR #301 (T1): `[`/`]`/`|` in title must not break the markdown link.
+        let plans = vec![mk_plan("br", "Plan [WIP] | x", "active", 1_000)];
+        let block = build_plans_index_block(&plans);
+        // Escaped link text + slug path intact.
+        assert!(block.contains("[Plan \\[WIP\\] \\| x](./br.md)"));
+        // No unescaped `[WIP]` that would render as a broken nested link.
+        assert!(!block.contains("[WIP]"));
     }
 
     #[test]
