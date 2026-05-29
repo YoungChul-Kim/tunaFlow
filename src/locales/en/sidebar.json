@@ -40,11 +40,33 @@
     "no_branches": "No branches",
     "no_projects": "No registered projects",
     "no_scratchpads": "No scratchpads yet",
-    "no_docs": "No docs found"
+    "no_docs": "No docs found",
+    "no_filtered_docs": "No docs match the filter"
   },
   "docs_scope": {
     "all": "All docs",
     "tunaflow": "tunaFlow only"
+  },
+  "plan_status": {
+    "draft": "Draft",
+    "active": "Active",
+    "done": "Done",
+    "abandoned": "Abandoned"
+  },
+  "plan_filter": {
+    "status": {
+      "all": "All",
+      "draft": "Draft",
+      "active": "Active",
+      "done": "Done",
+      "abandoned": "Abandoned"
+    },
+    "date": {
+      "all": "Any time",
+      "7d": "7d",
+      "30d": "30d",
+      "month": "This month"
+    }
   },
   "error": {
     "path_required": "Enter a path",

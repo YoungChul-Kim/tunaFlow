@@ -556,7 +556,7 @@ export function Sidebar() {
             {/* Tab content — px-2 to align with top area (mx-1 + px-2 = 12px from edge) */}
             <div className="flex-1 overflow-y-auto px-2 pb-2 min-h-0">
               {refTab === "docs" && (
-                <DocsSection projectPath={currentProject?.path} />
+                <DocsSection projectPath={currentProject?.path} projectKey={selectedProjectKey} />
               )}
               {refTab === "archive" && (
                 archivedBranches.length === 0 ? (

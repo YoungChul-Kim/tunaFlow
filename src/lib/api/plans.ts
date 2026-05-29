@@ -108,6 +108,15 @@ export async function generatePlanDocument(planId: string, projectPath: string):
   return invoke<string>("generate_plan_document", { planId, projectPath });
 }
 
+/**
+ * Regenerate the auto section of docs/plans/index.md from the DB plans table.
+ * Marker-based partial update — manual content outside the markers is preserved.
+ * Returns the index.md path.
+ */
+export async function regeneratePlansIndex(projectKey: string, projectPath: string): Promise<string> {
+  return invoke<string>("regenerate_plans_index", { projectKey, projectPath });
+}
+
 /** Generate review report. Returns file path. */
 export async function generateReviewReport(
   planId: string, projectPath: string,

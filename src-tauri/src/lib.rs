@@ -329,6 +329,7 @@ pub fn run() {
             commands::plans::generate_plan_document,
             commands::plans::generate_review_report,
             commands::plans::generate_result_report,
+            commands::plans::regenerate_plans_index,
             // Failure Lessons
             commands::failure_lessons::create_failure_lesson,
             commands::failure_lessons::create_failure_lessons_batch,

@@ -40,11 +40,33 @@
     "no_branches": "브랜치 없음",
     "no_projects": "등록된 프로젝트 없음",
     "no_scratchpads": "스크래치패드 없음",
-    "no_docs": "문서 없음"
+    "no_docs": "문서 없음",
+    "no_filtered_docs": "필터에 맞는 문서 없음"
   },
   "docs_scope": {
     "all": "전체 문서",
     "tunaflow": "tunaFlow 산출물"
+  },
+  "plan_status": {
+    "draft": "초안",
+    "active": "진행",
+    "done": "완료",
+    "abandoned": "중단"
+  },
+  "plan_filter": {
+    "status": {
+      "all": "전체",
+      "draft": "초안",
+      "active": "진행",
+      "done": "완료",
+      "abandoned": "중단"
+    },
+    "date": {
+      "all": "전체 기간",
+      "7d": "7일",
+      "30d": "30일",
+      "month": "이번 달"
+    }
   },
   "error": {
     "path_required": "경로를 입력하세요",

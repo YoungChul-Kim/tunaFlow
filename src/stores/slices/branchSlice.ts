@@ -189,7 +189,10 @@ export const createBranchSlice = (set: SetState, get: GetState): BranchSlice => 
       // the branch survives re-entry instead of being overwritten (T2).
       const parentEngine = get().getConversationEngine(selectedConversationId);
       if (parentEngine && !get().getConversationEngine(branchConvId)) {
-        get().saveConversationEngine(branchConvId, parentEngine);
+        // Shallow copy the inherited engine state so later parent mutation
+        // doesn't leak into the branch via a shared object reference
+        // (Gemini PR #300 review, medium). 상속 동작은 보존 (PR #300).
+        get().saveConversationEngine(branchConvId, { ...parentEngine });
       }
     } catch (e) {
       set({ error: errorMessage(e) });
