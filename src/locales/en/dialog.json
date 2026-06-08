@@ -98,7 +98,11 @@
     "skip_overlay_back": "Back",
     "skip_overlay_confirm": "Skip and proceed",
     "ollama_install_hint": "Install from https://ollama.com/download then run `ollama serve`",
-    "lmstudio_install_hint": "Install from https://lmstudio.ai then start the Local Server"
+    "lmstudio_install_hint": "Install from https://lmstudio.ai then start the Local Server",
+    "vllm_install_hint": "Install with `pip install vllm` then run `vllm serve <model> --host 0.0.0.0 --port 8000`",
+    "model_loading": "Loading models...",
+    "model_empty": "No models — install or refresh via Settings → Runtime",
+    "endpoint_refresh": "Re-detect endpoint (Enter or click)"
   },
   "meta_chat": {
     "new_notification_title": "New notification",

@@ -11,4 +11,5 @@ export const ENGINE_CONFIGS: Record<string, EngineConfig> = {
   gemini:   { command: "start_gemini_stream",        engineKey: "gemini",      label: "Gemini initializing...",   hasChunkEvent: true },
   ollama:   { command: "start_openai_compat_stream", engineKey: "ollama",      label: "Ollama initializing...",   hasChunkEvent: true },
   lmstudio: { command: "start_openai_compat_stream", engineKey: "lmstudio",    label: "LM Studio initializing...", hasChunkEvent: true },
+  vllm:     { command: "start_openai_compat_stream", engineKey: "vllm",        label: "vLLM initializing...",      hasChunkEvent: true },
 };

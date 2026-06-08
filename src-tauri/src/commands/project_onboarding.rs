@@ -543,12 +543,17 @@ async fn await_cli_with_cancel(
         match rx.try_recv() {
             Ok(Ok(output)) => {
                 if !output.status.success() {
+                    // 일부 CLI 는 에러를 stderr 가 아닌 stdout 으로 출력하거나
+                    // 둘 다 비어 있을 수 있어, 진단성을 위해 양쪽 모두 capture.
                     let stderr_body = String::from_utf8_lossy(&output.stderr);
+                    let stdout_body = String::from_utf8_lossy(&output.stdout);
                     let stderr_trimmed = stderr_body.trim();
-                    let detail = if stderr_trimmed.is_empty() {
-                        "(no stderr)".to_string()
-                    } else {
-                        stderr_trimmed.to_string()
+                    let stdout_trimmed = stdout_body.trim();
+                    let detail = match (stderr_trimmed.is_empty(), stdout_trimmed.is_empty()) {
+                        (true, true) => "(no output)".to_string(),
+                        (true, false) => format!("(stdout) {}", stdout_trimmed),
+                        (false, true) => stderr_trimmed.to_string(),
+                        (false, false) => format!("{} | (stdout) {}", stderr_trimmed, stdout_trimmed),
                     };
                     return Err(format!(
                         "{engine} 분석 실패 (exit: {:?}): {}",
@@ -573,6 +578,7 @@ async fn call_cli_agent(
     _bin: &str,
     prompt: &str,
     model: Option<&str>,
+    cwd: &str,
     cancel: &AtomicBool,
 ) -> Result<String, String> {
     use std::process::Stdio;
@@ -603,13 +609,19 @@ async fn call_cli_agent(
     if let Some(ref script) = resolved.script_arg {
         cmd.arg(script);
     }
+    // CLI 의 working directory 를 분석 대상 프로젝트로 설정 (upstream graft).
+    // 미설정 시 child 가 tunaFlow.exe 의 install dir 등 무관한 곳에서 실행되어
+    // codex 의 "Not inside a trusted directory" / claude 의 silent exit 등 회귀.
+    cmd.current_dir(cwd);
 
     match engine {
         "claude" => {
             // Windows 명령줄 길이 한도(32KB, os error 206) 우회:
             // 긴 분석 프롬프트를 -p <arg> 대신 stdin(pipe)으로 전달.
             // `claude -p -` = stdin에서 프롬프트 읽기.
-            cmd.args(["-p", "-", "--max-turns", "1", "--output-format", "text"]);
+            // --max-turns: claude 가 reasoning / tool use 시 1턴 초과로
+            // "Reached max turns (1)" exit 1 → 여유 확보(upstream graft, 1→5).
+            cmd.args(["-p", "-", "--max-turns", "5", "--output-format", "text"]);
             if let Some(m) = model { cmd.args(["--model", m]); }
             cmd.stdin(Stdio::piped());
         }
@@ -619,8 +631,25 @@ async fn call_cli_agent(
             cmd.stdin(Stdio::null());
         }
         "codex" => {
-            cmd.args(["exec", "--full-auto", "-"]);
-            if let Some(m) = model { cmd.args(["--model", m]); }
+            // `--full-auto` 는 codex 최신 버전에서 deprecated → `--sandbox
+            // workspace-write` 로 대체. cwd 가 git repo 가 아닌 경우도 동작
+            // 하도록 `--skip-git-repo-check` 도 추가 (사용자 분석 대상이
+            // 비-git 디렉토리일 수 있음).
+            cmd.args(["exec", "--sandbox", "workspace-write", "--skip-git-repo-check", "-"]);
+            // codex 의 model 호환은 인증 type (ChatGPT account vs API key)
+            // 에 따라 다르다. ChatGPT account 는 `gpt-5-codex` / `gpt-4o-codex`
+            // 같은 codex 전용 모델을 거부 (invalid_request_error). frontend
+            // 의 CLI_DEFAULT_MODELS["codex"] 가 그런 codex 전용 default 를
+            // 자동 선택하므로, 사용자가 명시 변경 없이 그대로 보낸 경우
+            // (default 첫 항목 그대로) 는 model 인자를 전달하지 않고 codex
+            // 자체 default (인증 type 에 맞는) 를 신뢰. 사용자가 다른 모델로
+            // 변경한 경우만 명시 전달.
+            const CODEX_DEFAULT_MODELS_TO_SKIP: &[&str] = &["gpt-5-codex", "gpt-4o-codex"];
+            if let Some(m) = model {
+                if !CODEX_DEFAULT_MODELS_TO_SKIP.contains(&m) {
+                    cmd.args(["--model", m]);
+                }
+            }
             cmd.stdin(Stdio::piped());
         }
         _ => return Err(format!("지원하지 않는 CLI 엔진: {engine}")),
@@ -763,11 +792,12 @@ async fn call_agent(
     model: Option<&str>,
     endpoint: Option<&str>,
     prompt: &str,
+    cwd: &str,
     cancel: &AtomicBool,
 ) -> Result<(String, String, Option<serde_json::Value>), String> {
     let text = match engine {
         "claude" | "codex" | "gemini" => {
-            call_cli_agent(engine, engine, prompt, model, cancel).await?
+            call_cli_agent(engine, engine, prompt, model, cwd, cancel).await?
         }
         "ollama" => {
             let ep = endpoint.unwrap_or("http://localhost:11434");
@@ -835,6 +865,7 @@ pub async fn analyze_project_for_onboarding(
         model.as_deref(),
         endpoint.as_deref(),
         &prompt,
+        &project_path,
         &cancel,
     ).await;
 

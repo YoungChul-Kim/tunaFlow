@@ -973,6 +973,141 @@ pub fn generate_result_report(
     Ok(file_path.to_string_lossy().to_string())
 }
 
+// ─── Plans index auto-generation (T3, docsPlansOrganizationPlan_2026-05-29) ───
+//
+// docs/plans/index.md 의 자동 영역만 마커 (`<!-- AUTO-INDEX-START/END -->`)
+// 사이에서 갱신. 마커 밖 수동 설명 (navigationModel 구조 안내) 보존
+// (INV-DPO-4). 경로 불변 — 파일 이동 없음 (Phase 1).
+
+pub const PLANS_INDEX_START_MARKER: &str = "<!-- AUTO-INDEX-START -->";
+pub const PLANS_INDEX_END_MARKER: &str = "<!-- AUTO-INDEX-END -->";
+
+/// Build the auto-generated index block (active plan table + archive summary).
+/// `plans` 는 list_plans_by_project 결과 (created_at ASC). updated_at 은 ms epoch.
+fn build_plans_index_block(plans: &[Plan]) -> String {
+    let mut active: Vec<&Plan> = plans
+        .iter()
+        .filter(|p| p.status == "draft" || p.status == "active")
+        .collect();
+    // 최근 갱신 순 (updated_at DESC).
+    active.sort_by(|a, b| b.updated_at.cmp(&a.updated_at));
+
+    let done = plans.iter().filter(|p| p.status == "done").count();
+    let abandoned = plans.iter().filter(|p| p.status == "abandoned").count();
+
+    let mut s = String::new();
+    s.push_str(PLANS_INDEX_START_MARKER);
+    s.push('\n');
+    s.push_str("> 이 영역은 tunaFlow 가 자동 생성합니다 (DB plans 테이블 기준). 직접 편집하지 마세요.\n\n");
+
+    s.push_str("### 🟢 진행 중 (DB 기준)\n\n");
+    if active.is_empty() {
+        s.push_str("_진행 중 plan 없음._\n\n");
+    } else {
+        s.push_str("| 문서 | 상태 | 갱신 |\n");
+        s.push_str("|------|------|------|\n");
+        for p in &active {
+            let slug = p.slug.clone().unwrap_or_else(|| slugify(&p.title));
+            let date = fmt_index_date(p.updated_at);
+            // markdown link `[title](path)` 안전: `|` (테이블 셀) + `[`/`]` (링크 텍스트) escape.
+            let title = p
+                .title
+                .replace('|', "\\|")
+                .replace('[', "\\[")
+                .replace(']', "\\]");
+            s.push_str(&format!(
+                "| [{}](./{}.md) | {} | {} |\n",
+                title, slug, p.status, date
+            ));
+        }
+        s.push('\n');
+    }
+
+    s.push_str("### 📦 아카이브 요약 (DB 기준)\n\n");
+    s.push_str(&format!("- 완료(done): **{}개**\n", done));
+    s.push_str(&format!("- 중단(abandoned): **{}개**\n", abandoned));
+    s.push_str("- 물리 아카이브 경로: `docs/archive/plans/{completed,deferred,misc,superseded}/`\n\n");
+
+    s.push_str(PLANS_INDEX_END_MARKER);
+    s
+}
+
+/// updated_at(ms epoch) → "YYYY-MM-DD". chrono 는 seconds 기대 → /1000.
+fn fmt_index_date(updated_at_ms: i64) -> String {
+    chrono::DateTime::from_timestamp(updated_at_ms / 1000, 0)
+        .map(|d| d.format("%Y-%m-%d").to_string())
+        .unwrap_or_else(|| updated_at_ms.to_string())
+}
+
+/// Merge `block` (포함: START/END 마커) into `existing` index.md content.
+/// - 마커 쌍이 있으면 그 사이를 교체 (마커 밖 수동 영역 보존).
+/// - 마커가 없으면 기존 내용 끝에 block 을 append (수동 영역 전체 보존).
+/// 반환값은 새 전체 파일 내용.
+fn merge_index_block(existing: &str, block: &str) -> String {
+    if let (Some(start), Some(end)) = (
+        existing.find(PLANS_INDEX_START_MARKER),
+        existing.find(PLANS_INDEX_END_MARKER),
+    ) {
+        if end > start {
+            let end_full = end + PLANS_INDEX_END_MARKER.len();
+            let mut out = String::new();
+            out.push_str(&existing[..start]);
+            out.push_str(block);
+            out.push_str(&existing[end_full..]);
+            return out;
+        }
+    }
+    // 마커 없음 → append. 기존 끝 개행 정규화 후 block 삽입.
+    let mut out = existing.trim_end().to_string();
+    if !out.is_empty() {
+        out.push_str("\n\n");
+    }
+    out.push_str(block);
+    out.push('\n');
+    out
+}
+
+/// Regenerate the auto section of docs/plans/index.md from the DB plans table.
+/// Marker-based partial update — manual description outside the markers is
+/// preserved (INV-DPO-4). Returns the index.md path.
+#[tauri::command]
+pub fn regenerate_plans_index(
+    project_key: String,
+    project_path: String,
+    state: State<DbState>,
+) -> Result<String, AppError> {
+    let plans = {
+        let conn = state.read.lock().map_err(|_| AppError::Lock)?;
+        let sql = format!(
+            "SELECT {} FROM plans p JOIN conversations c ON c.id = p.conversation_id
+             WHERE c.project_key = ?1 ORDER BY p.created_at ASC",
+            PLAN_COLS
+                .split(", ")
+                .map(|c| format!("p.{}", c))
+                .collect::<Vec<_>>()
+                .join(", ")
+        );
+        let mut stmt = conn.prepare(&sql)?;
+        let rows = stmt
+            .query_map([&project_key], map_plan)?
+            .collect::<Result<Vec<_>, _>>()?;
+        rows
+    }; // lock released
+
+    let block = build_plans_index_block(&plans);
+
+    let dir = Path::new(&project_path).join("docs").join("plans");
+    std::fs::create_dir_all(&dir)
+        .map_err(|e| AppError::Agent(format!("Failed to create dir: {}", e)))?;
+    let file_path = dir.join("index.md");
+
+    let existing = std::fs::read_to_string(&file_path).unwrap_or_default();
+    let merged = merge_index_block(&existing, &block);
+
+    atomic_write_md(&file_path, &merged)?;
+    Ok(file_path.to_string_lossy().to_string())
+}
+
 fn build_plan_markdown(plan: &Plan, subtasks: &[PlanSubtask], events: &[PlanEvent]) -> String {
     let mut md = String::new();
 
@@ -1371,5 +1506,118 @@ mod tests {
         assert!(leftovers.is_empty(), "tmp file leaked: {:?}", leftovers);
 
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    // ─── T3 — plans index auto-generation (marker merge + block build) ────────
+
+    fn mk_plan(slug: &str, title: &str, status: &str, updated_at: i64) -> Plan {
+        Plan {
+            id: format!("id-{}", slug),
+            conversation_id: "c".into(),
+            branch_id: None,
+            title: title.into(),
+            description: None,
+            expected_outcome: None,
+            status: status.into(),
+            phase: "drafting".into(),
+            architect_engine: None,
+            developer_engine: None,
+            reviewer_engines: None,
+            implementation_branch_id: None,
+            review_branch_id: None,
+            slug: Some(slug.into()),
+            revision: 0,
+            version_major: 1,
+            version_minor: 0,
+            created_at: 0,
+            updated_at,
+        }
+    }
+
+    #[test]
+    fn index_block_lists_active_and_summarizes_archive() {
+        let plans = vec![
+            mk_plan("alpha", "Alpha Plan", "active", 2_000),
+            mk_plan("beta", "Beta Plan", "draft", 3_000),
+            mk_plan("gamma", "Gamma Plan", "done", 1_000),
+            mk_plan("delta", "Delta Plan", "abandoned", 500),
+        ];
+        let block = build_plans_index_block(&plans);
+
+        // Markers present.
+        assert!(block.starts_with(PLANS_INDEX_START_MARKER));
+        assert!(block.trim_end().ends_with(PLANS_INDEX_END_MARKER));
+
+        // Active table contains active + draft (slug links), not done/abandoned.
+        assert!(block.contains("[Alpha Plan](./alpha.md)"));
+        assert!(block.contains("[Beta Plan](./beta.md)"));
+        assert!(!block.contains("[Gamma Plan](./gamma.md)"));
+        assert!(!block.contains("[Delta Plan](./delta.md)"));
+
+        // draft (updated 3000) sorted before active (updated 2000) — DESC by updated_at.
+        let beta = block.find("Beta Plan").unwrap();
+        let alpha = block.find("Alpha Plan").unwrap();
+        assert!(beta < alpha, "draft (newer) must appear before active (older)");
+
+        // Archive summary counts.
+        assert!(block.contains("완료(done): **1개**"));
+        assert!(block.contains("중단(abandoned): **1개**"));
+    }
+
+    #[test]
+    fn index_block_escapes_brackets_and_pipe_in_title() {
+        // Gemini PR #301 (T1): `[`/`]`/`|` in title must not break the markdown link.
+        let plans = vec![mk_plan("br", "Plan [WIP] | x", "active", 1_000)];
+        let block = build_plans_index_block(&plans);
+        // Escaped link text + slug path intact.
+        assert!(block.contains("[Plan \\[WIP\\] \\| x](./br.md)"));
+        // No unescaped `[WIP]` that would render as a broken nested link.
+        assert!(!block.contains("[WIP]"));
+    }
+
+    #[test]
+    fn index_block_empty_active_renders_placeholder() {
+        let plans = vec![mk_plan("g", "G", "done", 1)];
+        let block = build_plans_index_block(&plans);
+        assert!(block.contains("진행 중 plan 없음"));
+        assert!(block.contains("완료(done): **1개**"));
+    }
+
+    #[test]
+    fn merge_replaces_only_marker_region_preserving_manual() {
+        let existing = "# Plans\n\n수동 설명 위.\n\n<!-- AUTO-INDEX-START -->\nOLD AUTO\n<!-- AUTO-INDEX-END -->\n\n수동 설명 아래.\n";
+        let block = "<!-- AUTO-INDEX-START -->\nNEW AUTO\n<!-- AUTO-INDEX-END -->";
+        let merged = merge_index_block(existing, block);
+
+        // Manual text on both sides preserved.
+        assert!(merged.contains("수동 설명 위."));
+        assert!(merged.contains("수동 설명 아래."));
+        // Auto region replaced.
+        assert!(merged.contains("NEW AUTO"));
+        assert!(!merged.contains("OLD AUTO"));
+        // Exactly one marker pair (no duplication).
+        assert_eq!(merged.matches(PLANS_INDEX_START_MARKER).count(), 1);
+        assert_eq!(merged.matches(PLANS_INDEX_END_MARKER).count(), 1);
+    }
+
+    #[test]
+    fn merge_appends_block_when_no_markers() {
+        let existing = "# Plans — 진행 현황\n\n수동 인덱스 (마커 없음).\n";
+        let block = "<!-- AUTO-INDEX-START -->\nAUTO\n<!-- AUTO-INDEX-END -->";
+        let merged = merge_index_block(existing, block);
+
+        // Original manual content fully preserved.
+        assert!(merged.contains("# Plans — 진행 현황"));
+        assert!(merged.contains("수동 인덱스 (마커 없음)."));
+        // Block appended once.
+        assert!(merged.contains("AUTO"));
+        assert_eq!(merged.matches(PLANS_INDEX_START_MARKER).count(), 1);
+    }
+
+    #[test]
+    fn merge_into_empty_creates_block() {
+        let merged = merge_index_block("", "<!-- AUTO-INDEX-START -->\nX\n<!-- AUTO-INDEX-END -->");
+        assert!(merged.contains(PLANS_INDEX_START_MARKER));
+        assert!(merged.contains("X"));
     }
 }

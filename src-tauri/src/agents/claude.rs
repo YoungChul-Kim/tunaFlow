@@ -1,6 +1,6 @@
 use std::io::{BufRead, BufReader, Read, Write as IoWrite};
 use std::path::PathBuf;
-use std::process::{Command, Stdio};
+use std::process::Stdio;
 use std::thread;
 use serde::Deserialize;
 use crate::errors::AppError;
@@ -381,7 +381,10 @@ where
     C: Fn() -> bool,
 {
     let (claude_cmd, claude_script) = resolve_claude();
-    let mut cmd = Command::new(&claude_cmd);
+    // Windows: claude_cmd 가 npm `.cmd`/`.bat` wrapper 면 cmd /C 로 wrapping
+    // (Rust 1.77+ batch arg escape, CVE-2024-24576 회피). 실제 바이너리
+    // (claude.exe) 또는 Unix 면 wrap_windows_script 가 no-op → 직접 spawn.
+    let mut cmd = crate::agents::win_spawn::wrap_windows_script(&claude_cmd, &[]);
     cmd.no_console();
     if let Some(ref script) = claude_script {
         cmd.arg(script);
@@ -662,7 +665,10 @@ where
 /// since the subprocess can take an arbitrarily long time.
 pub fn run(input: RunInput) -> Result<RunOutput, AppError> {
     let (claude_cmd, claude_script) = resolve_claude();
-    let mut cmd = Command::new(&claude_cmd);
+    // Windows: claude_cmd 가 npm `.cmd`/`.bat` wrapper 면 cmd /C 로 wrapping
+    // (batch arg escape 회피). 실제 바이너리(claude.exe)/Unix 면 no-op (위
+    // `stream_run_once` 와 동일 SSOT 패턴).
+    let mut cmd = crate::agents::win_spawn::wrap_windows_script(&claude_cmd, &[]);
     cmd.no_console();
     if let Some(ref script) = claude_script {
         cmd.arg(script);

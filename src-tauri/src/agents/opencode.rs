@@ -4,7 +4,9 @@ use std::process::{Command, Stdio};
 use std::thread;
 
 use crate::agents::claude::{RunInput, RunOutput};
+use crate::agents::win_spawn::wrap_windows_script;
 use crate::errors::AppError;
+use crate::no_console::NoConsole;
 
 use super::claude::resolve_cwd;
 
@@ -59,9 +61,16 @@ fn resolve_opencode_path() -> PathBuf {
 /// - non-zero exit   → Err with stderr (or stdout) detail
 /// - zero exit, stdout empty, stderr has content → Err (soft error)
 /// - zero exit, stdout empty, no stderr → Ok("") — caller decides how to display
-/// Build command with Windows .cmd handling via shared resolve module.
+/// Build command with Windows .cmd handling via shared `win_spawn` SSOT.
+///
+/// `wrap_windows_script` 가 `.cmd` / `.bat` 만 `cmd /C` 로 wrapping —
+/// PR #278 onboarding 영역과 `agents/gemini.rs`, `agents/codex.rs` 와
+/// 동일 helper 를 통일 사용 (단일 분기점 가드 grep 용이).
 fn build_command(bin: &std::path::PathBuf) -> Command {
-    super::resolve::build_command(bin)
+    let path_str = bin.to_string_lossy();
+    let mut c = wrap_windows_script(&path_str, &[]);
+    c.no_console();
+    c
 }
 
 pub fn run(input: RunInput) -> Result<RunOutput, AppError> {

@@ -87,6 +87,59 @@ pub fn lmstudio_base_url() -> String {
         .unwrap_or_else(|_| "http://localhost:1234".into())
 }
 
+/// vLLM base URL (default: localhost:8000)
+pub fn vllm_base_url() -> String {
+    std::env::var("VLLM_ENDPOINT")
+        .unwrap_or_else(|_| "http://localhost:8000".into())
+}
+
+/// Normalize a vLLM endpoint so `/v1` is appended exactly once.
+///
+/// vLLM 공식 docs 안내 패턴 (`VLLM_ENDPOINT=http://host:8000/v1`) 과 base 형식
+/// (`http://host:8000`) 양쪽 모두를 안전하게 다루기 위한 helper. trailing `/`
+/// 제거 → 이미 `/v1` 로 끝나면 그대로, 아니면 `/v1` append. `agent_detect.rs`
+/// 의 `probe_vllm` 과 동일 정책 (gemini review PR #297 T1).
+pub fn normalize_vllm_base(endpoint: &str) -> String {
+    let trimmed = endpoint.trim_end_matches('/');
+    if trimmed.ends_with("/v1") {
+        trimmed.to_string()
+    } else {
+        format!("{}/v1", trimmed)
+    }
+}
+
+/// Discover vLLM models via OpenAI-compatible `/v1/models` endpoint.
+pub fn discover_vllm() -> Option<Vec<String>> {
+    let endpoint = vllm_base_url();
+    let base = normalize_vllm_base(&endpoint);
+    let url = format!("{}/models", base);
+
+    let client = reqwest::blocking::Client::builder()
+        .timeout(std::time::Duration::from_secs(3))
+        .build()
+        .ok()?;
+
+    let mut req = client.get(&url);
+    // VLLM_API_KEY 가 비어있으면 헤더를 붙이지 않는다. 빈 토큰의 `Authorization:
+    // Bearer ` 는 일부 vLLM 환경에서 401 을 반환한다 (PR #297 T2).
+    if let Some(token) = std::env::var("VLLM_API_KEY").ok().filter(|t| !t.is_empty()) {
+        req = req.header("Authorization", format!("Bearer {}", token));
+    }
+    let resp = req.send().ok()?;
+    if !resp.status().is_success() {
+        eprintln!("[openai_compat] vllm {} → {}", url, resp.status());
+        return None;
+    }
+
+    let body: serde_json::Value = resp.json().ok()?;
+    let data = body.get("data")?.as_array()?;
+    let models: Vec<String> = data.iter()
+        .filter_map(|m| m.get("id").and_then(|v| v.as_str()).map(String::from))
+        .collect();
+
+    if models.is_empty() { None } else { Some(models) }
+}
+
 pub async fn stream_run_with_base<F, G>(
     input: RunInput,
     base: String,
@@ -128,7 +181,13 @@ where
         tools: Some(tools_json),
     };
 
-    let engine_name = if base.contains(":1234") || base.contains("lmstudio") { "LM Studio" } else { "Ollama" };
+    let engine_name = if base.contains(":1234") || base.contains("lmstudio") {
+        "LM Studio"
+    } else if base.contains(":8000") || base.contains("vllm") {
+        "vLLM"
+    } else {
+        "Ollama"
+    };
     on_progress(format!("{} ({}) initializing...", engine_name, model));
 
     let client = Client::builder()
@@ -137,10 +196,16 @@ where
         .map_err(|e| AppError::Agent(format!("HTTP client build failed: {}", e)))?;
 
     let mut req = client.post(&url).json(&body);
-    if let Ok(token) = std::env::var("LMSTUDIO_API_KEY") {
-        if engine_name == "LM Studio" {
-            req = req.header("Authorization", format!("Bearer {}", token));
-        }
+    // Apply API key based on engine. 빈 문자열 토큰은 헤더에서 제외 — 일부 vLLM
+    // / LM Studio 환경에서 `Authorization: Bearer ` (token 없음) 가 401 을
+    // 반환한다 (PR #297 T3).
+    let api_key = match engine_name {
+        "LM Studio" => std::env::var("LMSTUDIO_API_KEY").ok().filter(|t| !t.is_empty()),
+        "vLLM" => std::env::var("VLLM_API_KEY").ok().filter(|t| !t.is_empty()),
+        _ => None,
+    };
+    if let Some(token) = api_key {
+        req = req.header("Authorization", format!("Bearer {}", token));
     }
     let response = req
         .send()
@@ -203,7 +268,13 @@ where
         tools: None,
     };
 
-    let engine_name = if base.contains(":1234") { "LM Studio" } else { "Ollama" };
+    let engine_name = if base.contains(":1234") || base.contains("lmstudio") {
+        "LM Studio"
+    } else if base.contains(":8000") || base.contains("vllm") {
+        "vLLM"
+    } else {
+        "Ollama"
+    };
     on_progress(format!("{} ({}) running (no tools)...", engine_name, model));
 
     let client = Client::builder()
@@ -212,10 +283,14 @@ where
         .map_err(|e| AppError::Agent(format!("HTTP client build failed: {}", e)))?;
 
     let mut req = client.post(&url).json(&body);
-    if let Ok(token) = std::env::var("LMSTUDIO_API_KEY") {
-        if engine_name == "LM Studio" {
-            req = req.header("Authorization", format!("Bearer {}", token));
-        }
+    // 빈 토큰 필터 — stream_run_with_base 와 동일 정책 (PR #297 T4).
+    let api_key = match engine_name {
+        "LM Studio" => std::env::var("LMSTUDIO_API_KEY").ok().filter(|t| !t.is_empty()),
+        "vLLM" => std::env::var("VLLM_API_KEY").ok().filter(|t| !t.is_empty()),
+        _ => None,
+    };
+    if let Some(token) = api_key {
+        req = req.header("Authorization", format!("Bearer {}", token));
     }
     let response = req.send().await
         .map_err(|e| AppError::Agent(format!("OpenAI-compatible API 요청 실패: {}", e)))?;

@@ -163,3 +163,21 @@
 - 보류 (archive): **13개**
 - IA/검토 (archive): **31개**
 - **합계**: 168개
+
+---
+
+> 아래 영역은 tunaFlow 가 DB `plans` 테이블 기준으로 자동 생성/갱신합니다
+> (`regenerate_plans_index` command). 위쪽 수동 설명·통계는 보존됩니다
+> (`docsPlansOrganizationPlan_2026-05-29`, INV-DPO-4).
+
+<!-- AUTO-INDEX-START -->
+> 이 영역은 tunaFlow 가 자동 생성합니다 (DB plans 테이블 기준). 직접 편집하지 마세요.
+
+### 🟢 진행 중 (DB 기준)
+
+_앱에서 `regenerate_plans_index` 실행 시 현재 프로젝트의 DB plan 으로 채워집니다._
+
+### 📦 아카이브 요약 (DB 기준)
+
+_앱 실행 시 완료/중단 카운트가 채워집니다._
+<!-- AUTO-INDEX-END -->

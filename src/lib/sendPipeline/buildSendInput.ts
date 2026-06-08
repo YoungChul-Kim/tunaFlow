@@ -49,7 +49,7 @@ export async function buildSendInput(p: BuildSendInputParams): Promise<SendWithC
   // Empty string is equivalent to "no override" so the backend falls back to
   // env var / hardcoded default; only non-empty trimmed value is forwarded.
   let customBaseUrl: string | undefined;
-  if (p.engine === "ollama" || p.engine === "lmstudio") {
+  if (p.engine === "ollama" || p.engine === "lmstudio" || p.engine === "vllm") {
     const raw = await getSetting<string>(`engineEndpoint:${p.engine}`, "");
     const trimmed = raw.trim();
     if (trimmed) customBaseUrl = trimmed;

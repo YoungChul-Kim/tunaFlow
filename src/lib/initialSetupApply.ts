@@ -22,7 +22,7 @@ import type { AgentProfile } from "@/types";
 const KNOWN_PERSONAS = new Set(DEFAULT_PERSONAS.map((p) => p.id));
 
 /** Engines we recognize. Matches ENGINE_CONFIGS keys. */
-const KNOWN_ENGINES = new Set(["claude", "codex", "gemini", "ollama", "lmstudio", "openai"]);
+const KNOWN_ENGINES = new Set(["claude", "codex", "gemini", "ollama", "lmstudio", "vllm", "openai"]);
 
 export interface RecommendedProfile {
   role: string;        // "architect" | "developer" | "reviewer" | …

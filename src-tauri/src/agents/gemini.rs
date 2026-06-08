@@ -1,10 +1,11 @@
 use std::io::{BufRead, BufReader, Read};
-use std::process::{Command, Stdio};
+use std::process::Stdio;
 use std::thread;
 
 use serde::Deserialize;
 
 use crate::agents::claude::{RunInput, RunOutput};
+use crate::agents::win_spawn::wrap_windows_script;
 use crate::errors::AppError;
 use crate::no_console::NoConsole;
 
@@ -27,7 +28,9 @@ use super::claude::resolve_cwd;
 pub fn run(input: RunInput) -> Result<RunOutput, AppError> {
     let (gemini_cmd, gemini_script) = resolve_gemini();
 
-    let mut cmd = Command::new(&gemini_cmd);
+    // Windows: gemini_cmd 가 `.cmd` wrapper 면 cmd /C 로 wrapping —
+    // Rust 1.77+ batch arg escape (CVE-2024-24576) 회피.
+    let mut cmd = wrap_windows_script(&gemini_cmd, &[]);
     cmd.no_console();
     if let Some(ref script) = gemini_script {
         cmd.arg("--no-warnings=DEP0040").arg(script);
@@ -153,7 +156,8 @@ where
 {
     let (gemini_cmd, gemini_script) = resolve_gemini();
 
-    let mut cmd = Command::new(&gemini_cmd);
+    // Windows: `.cmd` wrapper → cmd /C wrapping (위 `run()` 와 동일 이유).
+    let mut cmd = wrap_windows_script(&gemini_cmd, &[]);
     cmd.no_console();
     if let Some(ref script) = gemini_script {
         cmd.arg("--no-warnings=DEP0040").arg(script);

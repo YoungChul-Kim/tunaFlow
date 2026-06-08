@@ -6,8 +6,6 @@
 
 use std::path::PathBuf;
 
-use crate::no_console::NoConsole;
-
 /// Result of resolving a CLI binary.
 /// For npm-installed CLI tools on Windows, the command may be "node" with
 /// the actual script as an argument.
@@ -184,27 +182,9 @@ pub fn first_existing(candidates: &[PathBuf]) -> Option<PathBuf> {
     candidates.iter().find(|p| p.exists()).cloned()
 }
 
-/// Build a `std::process::Command` that handles Windows .cmd files correctly.
-/// `no_console()` 적용 — Windows 에서 cmd 창 생성 차단.
-#[cfg(target_os = "windows")]
-pub fn build_command(bin: &std::path::Path) -> std::process::Command {
-    let mut c = if bin.extension().and_then(|e| e.to_str()) == Some("cmd") {
-        let mut c = std::process::Command::new("cmd");
-        c.arg("/C").arg(bin);
-        c
-    } else {
-        std::process::Command::new(bin)
-    };
-    c.no_console();
-    c
-}
-
-#[cfg(not(target_os = "windows"))]
-pub fn build_command(bin: &std::path::Path) -> std::process::Command {
-    let mut c = std::process::Command::new(bin);
-    c.no_console();
-    c
-}
+// `build_command` 는 `agents::win_spawn::wrap_windows_script` 로 통합되었다.
+// 모든 호출 site (`opencode.rs` / `gemini.rs` / `codex.rs`) 가 `wrap_windows_script`
+// SSOT 로 전환되어 본 helper 는 제거. 회귀 가드 grep 단일화 효과.
 
 // ─── Tests ──────────────────────────────────────────────────────────────────
 

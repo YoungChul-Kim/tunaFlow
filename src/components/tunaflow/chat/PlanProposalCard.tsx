@@ -8,7 +8,7 @@ import type { ParsedPlanProposal } from "@/lib/planProposalParser";
 import { mergeDispositions } from "@/lib/planProposalParser";
 import type { Plan, PlanEvent } from "@/types";
 import * as planApi from "@/lib/api/plans";
-import { slugifyPlanTitle, syncPlanDocument } from "@/lib/workflowOrchestration";
+import { getPlanSlug, syncPlanDocument } from "@/lib/workflowOrchestration";
 
 interface PlanProposalCardProps {
   proposal: ParsedPlanProposal;
@@ -303,8 +303,12 @@ export function PlanProposalCard({ proposal, conversationId }: PlanProposalCardP
       // Plan starts at drafting — user must go through Plan → Subtask → Approved
       await planApi.createPlanEvent(plan.id, "promoted", "user", "Promoted from chat");
 
-      // Auto-request Architect to write plan documents
-      const slug = slugifyPlanTitle(proposal.title);
+      // Auto-request Architect to write plan documents.
+      // Use DB slug (collision-resolved by `find_unique_slug`) so the file
+      // path advertised in this Plan chat matches what Dev chat / Reviewer /
+      // loadTaskFileTitles will later use. Falling back to the frontend
+      // slugify only when the backend response unexpectedly omits `slug`.
+      const slug = getPlanSlug({ slug: plan.slug, title: proposal.title });
       const subtaskList = proposal.subtasks.map((s, i) =>
         `${i + 1}. ${s.title}${s.details ? ` — ${s.details}` : ""}`
       ).join("\n");

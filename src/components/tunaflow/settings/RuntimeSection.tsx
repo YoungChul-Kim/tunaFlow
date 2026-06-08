@@ -301,6 +301,7 @@ function InsightAgentConfig() {
             <option value="gemini">Gemini</option>
             <option value="ollama">Ollama</option>
             <option value="lmstudio">LM Studio</option>
+            <option value="vllm">vLLM</option>
           </select>
         </div>
         <div className="space-y-1 flex-1">

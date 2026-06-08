@@ -17,3 +17,4 @@ pub mod opencode;
 pub mod rawq;
 pub mod resolve;
 pub mod tool_handler;
+pub mod win_spawn;

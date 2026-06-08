@@ -4,6 +4,106 @@ All notable changes to tunaFlow are recorded here.
 Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/);
 versioning follows [SemVer](https://semver.org/spec/v2.0.0.html).
 
+## [0.1.9-beta-4] - 2026-05-29
+
+📂 **docs/plans 정리 Phase 1 — 가상 필터 + index 자동 생성** — 다모앙 커뮤니티 사용자 요청.
+
+### Added
+
+- **docs/plans 가상 필터 + 상태 배지** (PR #301 + #302) — 좌측 DocsSection 의 `docs/plans/` 항목에 DB plan 메타 (status/updated_at) join 하여 상태 배지 표시 + status(draft/active/done/abandoned) / 날짜(최근 7일·30일·월별) 필터. **경로 불변** (물리 폴더 이동 X) — 기존 문서 navigation 정책 (`documentationNavigationModel`: "메타+인덱스로 navigation") 정합. 동반 파일 (`-task-NN`/`-review-rN`/`-result`) 및 DB 미등록 doc 은 graceful 평면 표시.
+- **`regenerate_plans_index` command** (PR #301) — `docs/plans/index.md` 의 active plan 테이블 + archive 요약을 DB plans 기준 자동 생성. `<!-- AUTO-INDEX-START/END -->` 마커 기반 부분 갱신 (수동 설명 영역 보존).
+
+### Fixed
+
+- **stale 상태 배지** (PR #302) — plan status 변경/새 plan 생성 후 사이드바 배지·필터가 갱신 안 되던 문제. window focus / visibilitychange 복귀 시 docs 스캔 + plan 메타 동시 재로드 (타이머 polling 없이).
+- **index 링크 깨짐** (PR #302) — plan title 에 `[`/`]` 포함 시 markdown link 문법 깨짐 → bracket escape.
+- **필터 후 빈 디렉터리 표시** (PR #302) — 필터로 자식이 모두 걸러진 디렉터리 숨김 (원래 빈 dir 은 유지).
+- **branch engine 상속 shallow copy** (PR #301, Gemini PR #300 review) — shadow conv engine 상속 시 `{ ...parentEngine }` shallow copy 로 shared-state mutation 방지.
+
+### Notes
+
+- docs/plans 정리 **Phase 1** (가상 필터 + index, 경로 불변). **Phase 2** (완료 plan 의 archive 물리 이동 + 재귀 읽기) 는 본 release 사용자 검증 후 별도 진행.
+- 필터 source = DB `plans` 테이블 (status/created_at 일관). frontend 한정 + index command — FE 496→516, Rust 656→662.
+
+## [0.1.9-beta-3] - 2026-05-29
+
+🩹 **branch/RT agent 상태 유지 + workflow filter 유지 hotfix** — 다모앙 커뮤니티 사용자 보고 2건.
+
+### Fixed
+
+- **branch/RT 전환 시 agent 활성화 초기화** (PR #300, T1+T2) — branch 또는 roundtable 진입 시 선택된 engine/model/persona 가 default profile 로 reset 되던 회귀. branch shadow conversation (`branch:<id>`) 이 `_convEngineMap` 에 키가 없어 `NewMessageInput` restore effect 가 "첫 방문" 으로 인식 → default profile 강제 적용이 root cause. `branchSlice.openBranchStream` 에서 부모 conv 의 engine 을 shadow conv 키로 상속 (첫 진입만 — 사용자가 branch 안에서 변경한 engine 은 재진입 시 보존). 부모 미설정 시 기존 default 동작 보존.
+- **workflow filter 가 plan status 변경 후 강제 리셋** (PR #300, T3) — workflow "all" 필터에서 plan 의 done/draft 버튼 클릭 시 필터가 "plan-check" 으로 돌아가던 회귀. `CenterPanel` 의 `onStatusChanged` 콜백이 항상 `setActiveStage("plan-check")` 호출하던 것 제거. plan phase 변경 시의 자동 stage 전환 (`PHASE_TO_STAGE` 매핑) 은 의도된 동작이라 보존.
+
+### Notes
+
+- 두 fix 모두 frontend 한정 — Rust 변경 0. FE 491 → 496 tests (+5 신규).
+- RT participants/mode (DB `rt_config`) 의 shadow conv 상속은 별 이슈 — 본 hotfix 는 engine 상속만. 사용자 보고의 "agent 활성화" 가 engine selector 면 해결, RT participants 였으면 follow-up plan 필요.
+- 같은 사용자의 Plan/Dev 문서명 mismatch (#1) 는 v0.1.9-beta-2 의 PR #298 fix 로 처리됨 — codex-main 케이스 재현 확인 진행 중.
+
+## [0.1.9-beta-2] - 2026-05-28
+
+🩹 **Plan / Dev / Reviewer subtask file path 일관화 hotfix** — 외부 사용자 메신저 보고.
+
+### Fixed
+
+- **Plan → Dev handoff 의 subtask 파일명 mismatch** (PR #298) — Plan chat (Architect 작성 요청) 의 안내 `plan-task-01..04.md` 와 Dev chat (Architect→Developer handoff) 의 `plan-10-task-00..03.md` 가 **다른 slug + 다른 indexing** 으로 분기되어 Developer 가 작성한 파일을 못 찾는 회귀. 한글 title plan 누적 시 backend `slugify_title` fallback `"plan"` + `find_unique_slug` collision counter (`plan`, `plan-2`, ..., `plan-10`) 와 frontend `slugifyPlanTitle` fallback `"plan"` 가 분기. 4 task fix:
+  - **T1** `PlanProposalCard.tsx`: slug source = DB `plan.slug` (createPlan 응답) — `getPlanSlug` 통과로 DB slug 우선. 4 generator (Plan chat / Dev chat / `loadTaskFileTitles` / `reviewWorkflow`) 모두 같은 slug 사용
+  - **T2** `implementWorkflow.ts`: file path 1-indexed 통일 (`s.idx + 1`). DB `plan_subtasks.idx` 자체는 0-indexed 보존, file path 만 `loadTaskFileTitles` 의 `for i=1` 와 일관
+  - **T3** Dev chat prompt 에 `**전체 계획서**: docs/plans/{slug}.md` 추가 (Plan chat 과 대칭)
+  - **T4** 신규 vitest 13 케이스 — cross-generator consistency (한글/영문/legacy 시나리오)
+  - `autoRecoverSubtasks` 의 regex 는 0-indexed legacy file 도 backward compat 매칭
+
+### Notes
+
+- 본 hotfix 는 vLLM (v0.1.9-beta) 와 별 axis — vLLM 머지 후 외부 사용자 메신저 보고로 발견. 같은 minor 안 patch suffix 로 release.
+- backend `slugify_title` 의 `"plan"` fallback + `find_unique_slug` collision noise (사용자 한글 plan 누적 시 `plan-N` 자동 증가) 자체는 별 plan 영역. 본 fix 는 4 generator slug source 일관화만.
+- 기존 사용자 환경의 0-indexed legacy file (예: `plan-task-00.md`) 은 `autoRecoverSubtasks` regex 가 매칭하여 plan expand 정상. 새 plan 부터는 1-indexed.
+
+## [0.1.9-beta] - 2026-05-28
+
+🎉 **vLLM 6th UI-connected engine (외부 contributor yodakrkids)** — OpenAI-compatible API path 재사용, 기존 5 engines (claude / codex / gemini / ollama / lmstudio) + vLLM = 6.
+
+### Added
+
+- **vLLM engine** (PR #297, supersedes external #296 by yodakrkids) — RT / meta-agent / settings 전 영역 통합. HTTP endpoint + `VLLM_API_KEY` env var. `openai_compat::stream_run_with_base(vllm_base_url(), ...)` 라우팅. Gemini critical 4 fix 포함 (executor.rs vLLM 분기 ollama 잘못 라우팅 → vllm_base_url 명시, agents.rs eval path 동일, agent_detect.rs `probe_vllm` Authorization header). 18 files, +248/-50.
+
+### Notes
+
+- 외부 contributor yodakrkids 의 첫 PR #296 (vLLM scaffold) 가 base. Gemini code review critical 4 항목 follow-up commit 후 PR #297 로 supersede 머지.
+- vLLM = OpenAI-compatible 이라 기존 ollama / lmstudio 와 같은 `openai_compat` layer 재사용. ollama / lmstudio 동작 변경 0.
+
+## [0.1.8-beta-5] - 2026-05-28
+
+🩹 **Windows agents/ batch arg escape hotfix + MetaAgent endpoint UX** — 외부 사용자 보고 2 건 즉시 대응.
+
+### Fixed
+
+- **Windows `.cmd` 인자 escape 회귀** (PR #294, 외부 사용자 메신저 보고) — Rust 1.77+ batch arg escape 강화 (CVE-2024-24576) 에 의해 `Failed to spawn gemini (...gemini.cmd): batch file arguments are invalid` 에러. PR #278 의 `.cmd`/`.bat` → `cmd /C` wrapping 패턴이 `commands/{project_onboarding, agent_detect, search/query_expand}.rs` 만 cover 했고 **`agents/` 영역의 실제 send 경로 (gemini.rs / codex.rs / opencode.rs / claude.rs audit) 누락**. `src-tauri/src/agents/win_spawn.rs` 신규 — `wrap_windows_script` helper SSOT + 4 spawn site 일괄 적용. `cfg(target_os = "windows")` 분기 엄격, macOS / Linux 영향 0.
+- **MetaAgentSelector endpoint 자동 detect trigger UX** (PR #295, 외부 사용자 메신저 보고) — LM Studio Endpoint 에 `192.168.1.1` 입력 중 `.` 칠 때마다 600ms debounce 후 메타에이전트 검색이 자동 트리거되던 회귀. `onEndpointChange` 의 auto-detect 제거 → **Enter 키 + 신규 RefreshCw 버튼** 으로 명시 트리거. ollama / lmstudio 양쪽 동일 패턴.
+
+### Notes
+
+- v0.1.8-beta-4 외부 사용자 보고 follow-up. 두 영역 모두 Windows / endpoint UX 가시 회귀라 minor bump 의 patch suffix 로 release.
+- Windows CI 매트릭스 (Tauri Lite Windows) 는 release tag push 시 build.yml 에서만 동작 — PR 단계 CI (rust-check + frontend-check + eval) 는 self-hosted Linux 한정. Windows 실측은 release publish 후 외부 사용자 환경에서 검증.
+
+## [0.1.8-beta-4] - 2026-05-12
+
+🩹 **Windows main chat hang hotfix — 외부 contributor devbug 의 첫 PR** — rawq sidecar spawn 시 stdout/stderr drain 누락 + timeout 부재로 Windows 환경에서 채팅 입력 시 main chat 이 hang 되던 회귀.
+
+### Fixed
+
+- **rawq sidecar spawn timeouts + drain-thread** (PR #284, devbug, merge `98d96f0`) — `src-tauri/src/agents/rawq.rs` 의 sidecar subprocess 호출 path 에 (a) explicit timeout (b) stdout/stderr drain thread 추가. Windows 환경에서 pipe buffer 가 fill 되면 child 가 block 되어 main chat 입력이 응답 안 하던 회귀 fix. +161 / -46 LoC (single file). CI (rust-check + frontend-check + eval) 모두 SUCCESS 후 squash merge.
+
+### Added
+
+- **영역별 폰트 size / family 사용자 설정** (PR #285, merge `6eec4eb`) — 외부 사용자 요청 follow-up. Settings → 외관 / Fonts 에 3 영역 (chat message body / code block / sidebar UI) × 2 control (size + family) = 6 입력. size 범위 [10, 24] / step 1 / family 빈값=토큰 폴백. CSS variable (`--tf-chat-size` / `--tf-code-family` 등 6 종) 주입 + inline `style` 적용. 미설정 사용자는 기존 Tailwind 토큰 default 로 회귀 0. Zustand `fontSettingsStore` + appStore 영속 + `useFontVariableSync` hook. i18n `appearance.fonts.*` 9 키 ko/en 양쪽. 21 신규 vitest. 다른 IDE (VS Code / Cursor / JetBrains / Sublime / Zed) 조사 결과 inline 정리: `docs/plans/customFontSettingsPlan_2026-05-12.md`.
+
+### Notes
+
+- 외부 contributor (devbug) 의 첫 PR 형식 hotfix. 본인 Windows 환경에서 직접 재현·진단·수정·CI 통과까지 진행. ack 댓글: https://github.com/hang-in/tunaFlow/pull/284#issuecomment-4495263696
+- v0.1.8-beta-3 와 동일 cycle 의 사용자 환경 회귀 영역 (CLI path) 이라 같은 minor bump 의 patch suffix 로 release.
+- 본 release 는 rawq Windows hotfix (PR #284) + 외부 요청 font settings (PR #285) 묶음. 두 변경 영역 안 겹침 (rawq sidecar = Rust, font = frontend), 단일 release 로 publish.
+
 ## [0.1.8-beta-3] - 2026-05-09
 
 🩹 **CLI `--resume` path 의 *"Prompt is too long"* 자동 fresh retry hotfix** —

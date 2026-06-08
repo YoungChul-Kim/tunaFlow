@@ -88,6 +88,7 @@ fn fallback_models(engine: &str) -> Vec<(&'static str, &'static str, bool)> {
             ("phi-4:latest", "Phi-4", false),
         ],
         "lmstudio" => vec![],  // LM Studio models are always discovered live
+        "vllm" => vec![],      // vLLM models are always discovered live
         _ => vec![],
     }
 }
@@ -380,7 +381,7 @@ fn discover_lmstudio() -> Option<Vec<String>> {
 
 // ─── Core API ───────────────────────────────────────────────────────────────
 
-const ENGINES: &[&str] = &["claude", "codex", "gemini", "ollama", "lmstudio"];
+const ENGINES: &[&str] = &["claude", "codex", "gemini", "ollama", "lmstudio", "vllm"];
 
 fn get_models_for_engine(engine: &str, force: bool) -> (Vec<String>, String) {
     // Check cache — invalidate early if the tracked binary's mtime has changed
@@ -412,6 +413,7 @@ fn get_models_for_engine(engine: &str, force: bool) -> (Vec<String>, String) {
         },
         "ollama" => (crate::agents::openai_compat::discover_models(), None),
         "lmstudio" => (discover_lmstudio(), None),
+        "vllm" => (crate::agents::openai_compat::discover_vllm(), None),
         _ => (None, None),
     };
 

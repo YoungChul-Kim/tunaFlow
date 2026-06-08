@@ -290,6 +290,13 @@ export function Sidebar() {
       role="navigation"
       aria-label={t("aria_label")}
       className="flex flex-col w-full bg-sidebar h-full overflow-hidden text-sidebar-foreground"
+      // Custom font settings — sidebar UI 영역.
+      // Plan: docs/plans/customFontSettingsPlan_2026-05-12.md §3 T4
+      // 자식 컴포넌트들이 명시적 text-* 사이즈를 가진 경우엔 그대로 두고,
+      // 상속 가능한 element 만 본 root font-* 가 영향 — Tailwind 명시 토큰이
+      // override 하므로 회귀 0. 사용자가 size 조정 시 inherit 가능한 위치에서
+      // 즉시 반영된다.
+      style={{ fontSize: "var(--tf-ui-size)", fontFamily: "var(--tf-ui-family)" }}
       onContextMenu={handleSidebarCtx}
     >
       {/* Traffic light spacer */}
@@ -549,7 +556,7 @@ export function Sidebar() {
             {/* Tab content — px-2 to align with top area (mx-1 + px-2 = 12px from edge) */}
             <div className="flex-1 overflow-y-auto px-2 pb-2 min-h-0">
               {refTab === "docs" && (
-                <DocsSection projectPath={currentProject?.path} />
+                <DocsSection projectPath={currentProject?.path} projectKey={selectedProjectKey} />
               )}
               {refTab === "archive" && (
                 archivedBranches.length === 0 ? (

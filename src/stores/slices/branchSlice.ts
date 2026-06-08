@@ -178,6 +178,22 @@ export const createBranchSlice = (set: SetState, get: GetState): BranchSlice => 
         messages: branchMessages,
         error: null,
       }));
+      // Inherit parent conv's engine/model/persona into the shadow conv key
+      // (`branch:<branchId>`). Without this, NewMessageInput's restore effect
+      // sees no entry for the shadow conv → forces the default profile →
+      // engine/model/persona reset on branch entry. Call AFTER the set() above
+      // so the effect (keyed on selectedConversationId) reads the inherited
+      // value. Skip when the parent has no entry (first visit) — preserve the
+      // existing default behaviour (INV-BAF-2). Only inherit on first entry
+      // (`!getConversationEngine(branchConvId)`) so a user-changed engine inside
+      // the branch survives re-entry instead of being overwritten (T2).
+      const parentEngine = get().getConversationEngine(selectedConversationId);
+      if (parentEngine && !get().getConversationEngine(branchConvId)) {
+        // Shallow copy the inherited engine state so later parent mutation
+        // doesn't leak into the branch via a shared object reference
+        // (Gemini PR #300 review, medium). 상속 동작은 보존 (PR #300).
+        get().saveConversationEngine(branchConvId, { ...parentEngine });
+      }
     } catch (e) {
       set({ error: errorMessage(e) });
     }

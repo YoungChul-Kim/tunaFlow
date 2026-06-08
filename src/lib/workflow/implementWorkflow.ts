@@ -66,8 +66,12 @@ export async function approveAndStartImplementation(
   const pendingSubtasks = subtasks.filter((s) => s.status !== "done");
   const targetSubtasks = pendingSubtasks.length > 0 ? pendingSubtasks : subtasks;
 
+  // File path uses 1-based numbering to align with PlanProposalCard,
+  // loadTaskFileTitles, reviewWorkflow, and autoRecoverSubtasks. The DB
+  // `idx` column remains 0-based (see INV-SPC-3) — only the on-disk file
+  // suffix shifts by +1 so that "task #1" maps to `…-task-01.md`.
   const taskItems = targetSubtasks.map((s) =>
-    `- \`docs/plans/${slug}-task-${String(s.idx).padStart(2, "0")}.md\` — ${s.title}`
+    `- \`docs/plans/${slug}-task-${String(s.idx + 1).padStart(2, "0")}.md\` — ${s.title}`
   );
   const doneCount = subtasks.length - targetSubtasks.length;
   const doneNote = doneCount > 0
@@ -77,6 +81,8 @@ export async function approveAndStartImplementation(
     `### 🔧 구현 시작`,
     ``,
     `**Plan**: "${plan.title}"`,
+    ``,
+    `**전체 계획서**: \`docs/plans/${slug}.md\``,
     ``,
     `**작업 지시서**:`,
     ...taskItems,

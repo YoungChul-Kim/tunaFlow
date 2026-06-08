@@ -499,9 +499,13 @@ pub async fn start_openai_compat_stream(
 ) -> Result<StartRunResult, AppError> {
     let db = state.inner().clone();
     let db_post = state.inner().clone();
-    let is_lmstudio = input.engine.as_deref() == Some("lmstudio");
-    let engine_label = if is_lmstudio { "lmstudio" } else { "ollama" };
-    eprintln!("[openai-compat] engine={:?} model={:?} is_lmstudio={}", input.engine, input.model, is_lmstudio);
+    let engine_key = input.engine.as_deref().unwrap_or("ollama");
+    let engine_label = match engine_key {
+        "lmstudio" => "lmstudio",
+        "vllm" => "vllm",
+        _ => "ollama",
+    };
+    eprintln!("[openai-compat] engine={:?} model={:?} engine_label={}", input.engine, input.model, engine_label);
     let id_frag = identity_fragment(&input, engine_label);
     let write_arc = db_write_arc(&state);
     let cid = input.conversation_id.clone();
@@ -530,10 +534,10 @@ pub async fn start_openai_compat_stream(
         .filter(|s| !s.is_empty())
         .map(str::to_owned)
         .unwrap_or_else(|| {
-            if is_lmstudio {
-                openai_compat::lmstudio_base_url()
-            } else {
-                std::env::var("OLLAMA_HOST").unwrap_or_else(|_| "http://localhost:11434".into())
+            match engine_label {
+                "lmstudio" => openai_compat::lmstudio_base_url(),
+                "vllm" => openai_compat::vllm_base_url(),
+                _ => std::env::var("OLLAMA_HOST").unwrap_or_else(|_| "http://localhost:11434".into()),
             }
         });
 
@@ -609,6 +613,24 @@ pub fn run_eval_agent(
         "gemini" => gemini::run(run_input),
         "opencode" => opencode::run(run_input),
         "ollama" => openai_compat::run(run_input),
+        // vllm: openai_compat::run() defaults to ollama_base_url() — eval
+        // requests would silently hit localhost:11434. Route through
+        // stream_run_with_base() with vllm_base_url() so the eval reaches the
+        // actual vLLM server. Mirrors openai_compat::run() — uses the current
+        // tokio runtime handle (Tauri commands run inside one).
+        "vllm" => {
+            let handle = tokio::runtime::Handle::try_current().map_err(|_| {
+                AppError::Agent("No tokio runtime available for vllm eval".into())
+            })?;
+            handle.block_on(async {
+                openai_compat::stream_run_with_base(
+                    run_input,
+                    openai_compat::vllm_base_url(),
+                    |_: String| {},
+                    |_: String| {},
+                ).await
+            })
+        }
         _ => claude::run(run_input),
     };
     let duration_ms = t0.elapsed().as_millis() as i64;
