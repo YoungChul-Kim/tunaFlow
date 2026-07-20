@@ -3,7 +3,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { useTranslation } from "react-i18next";
 import { cn } from "@/lib/utils";
 import { useChatStore } from "@/stores/chatStore";
-import { ChevronLeft, ChevronRight, Loader2, Search, StickyNote } from "lucide-react";
+import { ChevronLeft, ChevronRight, Loader2, RotateCcw, Search, StickyNote } from "lucide-react";
 
 import { lazy, Suspense } from "react";
 import { ChatPanel } from "./ChatPanel";
@@ -13,6 +13,7 @@ import { ReviewPanel } from "./context-panel/ReviewPanel";
 import { InsightPanel } from "./context-panel/InsightPanel";
 import { ArtifactsPanel } from "./context-panel/ArtifactsPanel";
 import { NotificationBell } from "./NotificationBell";
+import { restartClaudeSession } from "@/lib/api/claudeSession";
 
 const TerminalPanel = lazy(() => import("./TerminalPanel").then((m) => ({ default: m.TerminalPanel })));
 
@@ -192,8 +193,17 @@ export function CenterPanel() {
 
         <div className="flex-1 min-w-0" />
 
-        {/* Search + Notification bell */}
+        {/* Session restart + Search + Notification bell */}
         <div className="flex items-center gap-1 shrink-0">
+          {selectedConversationId && (
+            <button
+              onClick={() => restartClaudeSession(selectedConversationId)}
+              title="Claude 세션 재시작"
+              className="p-1.5 rounded text-muted-foreground/40 hover:text-foreground hover:bg-accent/50 transition-colors"
+            >
+              <RotateCcw className="w-3.5 h-3.5" />
+            </button>
+          )}
           {drawerPinned ? (
             <button
               onClick={() => window.dispatchEvent(new CustomEvent("tunaflow:open-command-palette"))}
