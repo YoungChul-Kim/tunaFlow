@@ -24,7 +24,13 @@
       "Bash(grep -r \"chat.*to.*plan\\\\|transition.*plan\\\\|follow.*up.*plan\" /Users/d9ng/privateProject/tunaFlow/docs --include=*.md)",
       "WebFetch(domain:www.stavros.io)",
       "Bash(grep -l \"test execution\\\\|cargo test\\\\|vitest\\\\|skill.*test\" /Users/d9ng/privateProject/tunaFlow/docs/plans/*.md)",
-      "Bash(find /Users/d9ng/privateProject/tunaFlow -path src-tauri -prune -o -type f -name \"*.ts\" -exec grep -l \"interface Branch\\\\|type Branch\\\\|interface Message\\\\|type RoundtableParticipant\" {})"
+      "Bash(find /Users/d9ng/privateProject/tunaFlow -path src-tauri -prune -o -type f -name \"*.ts\" -exec grep -l \"interface Branch\\\\|type Branch\\\\|interface Message\\\\|type RoundtableParticipant\" {})",
+      "PowerShell(git fetch *)",
+      "PowerShell(head *)",
+      "PowerShell(git stash *)",
+      "PowerShell(npx tsc --noEmit 2>&1)",
+      "PowerShell(npx vite build 2>&1)",
+      "PowerShell(npm run *)"
     ]
   }
 }
